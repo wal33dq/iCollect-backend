@@ -20,6 +20,14 @@ export class RecordsService {
       payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
     }
 
+    // Calculate outstanding if bill and paid are provided
+    if (payload.bill !== undefined && payload.paid !== undefined) {
+      payload.outstanding = payload.bill - payload.paid;
+    } else if (payload.bill !== undefined) {
+      // If only bill is provided, outstanding is the same as bill (assuming paid is 0)
+      payload.outstanding = payload.bill;
+    }
+
     const createdRecord = new this.recordModel({
       ...payload,
       recordCreatedAt: new Date(),
@@ -44,17 +52,16 @@ export class RecordsService {
     const sheet = workbook.Sheets[sheetName];
     const data: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-    if (data.length <= 1) {
-      return { count: 0, errors: ['No data rows found in the sheet.'] };
+    if (data.length === 0) {
+      return { count: 0, errors: ['No data found in the sheet.'] };
     }
 
     const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
-    const recordsToCreate: CreateRecordDto[] = [];
-    const errors: string[] = [];
 
+    const records: CreateRecordDto[] = [];
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      if (row.every(cell => cell === null || cell === undefined || cell === '')) continue;
+      if (row.length === 0) continue;
 
       const record: any = {
         claimNo: [],
@@ -62,77 +69,101 @@ export class RecordsService {
         doi: [],
       };
 
-      headers.forEach((header, j) => {
+      for (let j = 0; j < headers.length; j++) {
         let value = row[j];
         if (value === undefined || value === '') value = null;
 
-        const lowerHeader = header.toLowerCase();
+        const header = headers[j].toLowerCase();
 
-        if (lowerHeader === 'provider') record.provider = value;
-        else if (lowerHeader === 'renderingfacility') record.renderingFacility = value;
-        else if (lowerHeader === 'taxid') record.taxId = value;
-        else if (lowerHeader === 'ptname') record.ptName = value;
-        else if (lowerHeader === 'dob') record.dob = value;
-        else if (lowerHeader === 'ssnno') record.ssn = value;
-        else if (lowerHeader === 'employer') record.employer = value;
-        else if (lowerHeader === 'insurance') record.insurance = value;
-        else if (lowerHeader === 'bill') record.bill = value ? parseFloat(value) : null;
-        else if (lowerHeader === 'fds') record.fds = value;
-        else if (lowerHeader === 'lds') record.lds = value;
-        else if (lowerHeader === 'soldate') record.solDate = value;
-        else if (lowerHeader === 'hearingstatus') record.hearingStatus = value;
-        else if (lowerHeader === 'hearingdate') record.hearingDate = value;
-        else if (lowerHeader === 'hearingtime') record.hearingTime = value;
-        else if (lowerHeader === 'judgename') record.judgeName = value;
-        else if (lowerHeader === 'courtroomlink') record.courtRoomlink = value;
-        else if (lowerHeader === 'judgephone') record.judgePhone = value;
-        else if (lowerHeader === 'accescode') record.AccesCode = value;
-        else if (lowerHeader === 'boardlocation') record.boardLocation = value;
-        else if (lowerHeader === 'lienstatus') record.lienStatus = value;
-        else if (lowerHeader === 'casestatus') record.caseStatus = value;
-        else if (lowerHeader === 'casedate') record.caseDate = value;
-        else if (lowerHeader === 'c&ramount') record.crAmount = value ? parseFloat(value) : null;
-        else if (lowerHeader === 'adjuster') record.adjuster = value;
-        else if (lowerHeader === 'a-ph') record.adjusterPhone = value;
-        else if (lowerHeader === 'a-fax') record.adjusterFax = value;
-        else if (lowerHeader === 'a-email') record.adjusterEmail = value;
-        else if (lowerHeader === 'da') record.defenseAttorney = value;
-        else if (lowerHeader === 'dapho') record.defenseAttorneyPhone = value;
-        else if (lowerHeader === 'dafax') record.defenseAttorneyFax = value;
-        else if (lowerHeader === 'daemail') record.defenseAttorneyEmail = value;
-        else if (lowerHeader.startsWith('claimno.')) {
-            if (value) record.claimNo.push({ value });
-        } else if (lowerHeader.startsWith('adjnumber.')) {
-            if (value) record.adjNumber.push({ value });
-        } else if (lowerHeader.startsWith('doi.')) {
-            if (value) record.doi.push({ value });
+        if (header === 'provider') record.provider = value;
+        else if (header === 'renderingfacility') record.renderingFacility = value;
+        else if (header === 'taxid') record.taxId = value;
+        else if (header === 'ptname') record.ptName = value;
+        else if (header === 'dob') record.dob = value;
+        else if (header === 'ssnno') record.ssn = value;
+        else if (header === 'employer') record.employer = value;
+        else if (header === 'insurance') record.insurance = value;
+        else if (header === 'bill') record.bill = value ? parseFloat(value) : null;
+        // --- Updated Fields Start ---
+        else if (header === 'paid') record.paid = value ? parseFloat(value) : null;
+        else if (header === 'outstanding') record.outstanding = value ? parseFloat(value) : null;
+        // --- Updated Fields End ---
+        else if (header === 'fds') record.fds = value;
+        else if (header === 'lds') record.lds = value;
+        else if (header === 'ledger') record.ledger = value;
+        // --- Updated Fields Start ---
+        else if (header === 'hcf') record.hcf = value;
+        else if (header === 'invoice') record.invoice = value;
+        else if (header === 'signinsheet') record.signinSheet = value;
+        // --- Updated Fields End ---
+        else if (header === 'soldate') record.solDate = value;
+        else if (header === 'hearingstatus') record.hearingStatus = value;
+        else if (header === 'hearingdate') record.hearingDate = value;
+        else if (header === 'hearingtime') record.hearingTime = value;
+        else if (header === 'judgename') record.judgeName = value;
+        else if (header === 'courtroomlink') record.courtRoomlink = value;
+        else if (header === 'judgephone') record.judgePhone = value;
+        else if (header === 'accescode') record.AccesCode = value;
+        else if (header === 'boardlocation') record.boardLocation = value;
+        else if (header === 'lienstatus') record.lienStatus = value;
+        else if (header === 'casestatus') record.caseStatus = value;
+        else if (header === 'casedate') record.caseDate = value;
+        else if (header === 'c&ramount') record.crAmount = value ? parseFloat(value) : null;
+        else if (header === 'adjuster') record.adjuster = value;
+        else if (header === 'a-ph') record.adjusterPhone = value;
+        else if (header === 'a-fax') record.adjusterFax = value;
+        else if (header === 'a-email') record.adjusterEmail = value;
+        else if (header === 'da') record.defenseAttorney = value;
+        else if (header === 'dapho') record.defenseAttorneyPhone = value;
+        else if (header === 'dafax') record.defenseAttorneyFax = value;
+        else if (header === 'daemail') record.defenseAttorneyEmail = value;
+        else if (header.startsWith('claimno.')) {
+          const index = parseInt(header.split('.')[1]) - 1;
+          if (value) record.claimNo[index] = { value };
+        } else if (header.startsWith('adjnumber.')) {
+          const index = parseInt(header.split('.')[1]) - 1;
+          if (value) record.adjNumber[index] = { value };
+        } else if (header.startsWith('doi.')) {
+          const index = parseInt(header.split('.')[1]) - 1;
+          if (value) record.doi[index] = { value };
         }
-      });
-      
+      }
+
+      record.claimNo = record.claimNo.filter(item => item !== undefined);
+      record.adjNumber = record.adjNumber.filter(item => item !== undefined);
+      record.doi = record.doi.filter(item => item !== undefined);
+
+      // Calculate outstanding if not provided but bill/paid are
+      if (record.outstanding === undefined || record.outstanding === null) {
+        if (record.bill !== undefined && record.paid !== undefined && record.bill !== null && record.paid !== null) {
+            record.outstanding = record.bill - record.paid;
+        } else if (record.bill !== undefined && record.bill !== null) {
+            record.outstanding = record.bill; // Assume paid is 0
+        }
+      }
+
+      // Upload record if patient name exists, regardless of the bill amount.
       if (record.ptName) {
         if (collectorId) {
-          record.assignedCollector = new Types.ObjectId(collectorId);
+          record.assignedCollector = collectorId;
         }
-        record.recordCreatedAt = new Date();
-        recordsToCreate.push(record);
-      } else {
-        errors.push(`Row ${i + 1} skipped: missing 'ptName'.`);
+        records.push(record);
       }
     }
 
-    if (recordsToCreate.length === 0) {
-        return { count: 0, errors };
+    let count = 0;
+    const errors: string[] = [];
+
+    for (const rec of records) {
+      try {
+        await this.create(rec);
+        count++;
+      } catch (err) {
+        errors.push(`Error creating record for ${rec.ptName}: ${err.message}`);
+      }
     }
 
-    try {
-        // Use insertMany for bulk insertion, which is much more efficient.
-        const result = await this.recordModel.insertMany(recordsToCreate, { ordered: false });
-        return { count: result.length, errors };
-    } catch (err) {
-        // Handle potential bulk write errors, though basic errors are less likely with `ordered: false`.
-        errors.push(`An error occurred during bulk insertion: ${err.message}`);
-        return { count: err.insertedDocs?.length || 0, errors };
-    }
+    return { count, errors };
   }
 
   async findAll(collectorId?: string): Promise<Record[]> {
@@ -177,6 +208,28 @@ export class RecordsService {
     return record;
   }
 
+  async reassignMany(recordIds: string[], collectorId: string): Promise<{ modifiedCount: number }> {
+    if (!Types.ObjectId.isValid(collectorId)) {
+      throw new BadRequestException('Invalid collectorId format.');
+    }
+    const validRecordIds = recordIds
+      .filter(id => Types.ObjectId.isValid(id))
+      .map(id => new Types.ObjectId(id));
+    
+    if (validRecordIds.length !== recordIds.length) {
+      throw new BadRequestException('One or more invalid record IDs provided.');
+    }
+
+    const collectorObjectId = new Types.ObjectId(collectorId);
+
+    const result = await this.recordModel.updateMany(
+      { _id: { $in: validRecordIds } },
+      { $set: { assignedCollector: collectorObjectId } }
+    );
+
+    return { modifiedCount: result.modifiedCount };
+  }
+
   async assignCollector(id: string, collectorId: string): Promise<Record> {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
     if (!Types.ObjectId.isValid(collectorId)) throw new BadRequestException('Invalid collectorId format.');
@@ -200,14 +253,30 @@ export class RecordsService {
   async update(id: string, updateData: any, user: any): Promise<Record> {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
 
-    const record = await this.recordModel
+    // Recalculate outstanding amount if bill or paid is being updated
+    if (updateData.bill !== undefined || updateData.paid !== undefined) {
+        const record = await this.recordModel.findById(id);
+        if (!record) throw new BadRequestException('Record not found');
+
+        const newBill = updateData.bill !== undefined ? updateData.bill : record.bill;
+        const newPaid = updateData.paid !== undefined ? updateData.paid : record.paid;
+
+        if (newBill !== undefined && newPaid !== undefined && newBill !== null && newPaid !== null) {
+            updateData.outstanding = newBill - newPaid;
+        } else if (newBill !== undefined && newBill !== null) {
+            updateData.outstanding = newBill; // Assume paid is 0 if not set
+        }
+    }
+
+
+    const updatedRecord = await this.recordModel
         .findByIdAndUpdate(id, updateData, { new: true })
         .populate('assignedCollector', 'username')
         .populate('comments.author', 'username')
         .exec();
 
-    if (!record) throw new BadRequestException('Record not found');
-    return record;
+    if (!updatedRecord) throw new BadRequestException('Record not found');
+    return updatedRecord;
   }
 
   async addComment(

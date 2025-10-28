@@ -136,6 +136,22 @@ export class RecordsController {
     return record;
   }
 
+  @Put('reassign-many')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async reassignMany(
+    @Body('recordIds') recordIds: string[],
+    @Body('collectorId') collectorId: string,
+  ) {
+    if (!recordIds || !Array.isArray(recordIds) || recordIds.length === 0) {
+      throw new BadRequestException('recordIds must be a non-empty array.');
+    }
+    if (!collectorId) {
+      throw new BadRequestException('collectorId is required.');
+    }
+    return this.recordsService.reassignMany(recordIds, collectorId);
+  }
+
   @Put(':id/assign')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)

@@ -49,7 +49,8 @@ const CommentSchema = SchemaFactory.createForClass(Comment);
 @Schema({ timestamps: true })
 export class Record {
   _id: Types.ObjectId;
-  // --- NON-MODIFIABLE FIELDS ---
+  
+  // --- NON-MODIFIABLE FIELDS/Patient Information ---
 
   @Prop({ required: true, index: true, immutable: true })
   provider: string;
@@ -63,7 +64,6 @@ export class Record {
   @Prop({ required: true, index: true, immutable: true })
   ptName: string;
 
-
   @Prop({ immutable: true })
   dob: Date;
 
@@ -73,30 +73,95 @@ export class Record {
   @Prop({ immutable: true })
   employer: string;
 
-  @Prop({ immutable: true })
-  insurance: string;
-
-  @Prop({ immutable: true })
-  bill: number;
-
-  @Prop({ immutable: true })
-  fds: Date;
-
-  @Prop({ immutable: true })
-  lds: Date;
-
-  @Prop({ immutable: true })
-  solDate: Date;
-
-  // --- MODIFIABLE FIELDS ---
-  @Prop({ type: [MultiEntrySchema], default: [] })
-  claimNo: MultiEntry[];
+ @Prop({ type: [MultiEntrySchema], default: [] })
+  doi: MultiEntry[];
 
   @Prop({ type: [MultiEntrySchema], default: [] })
   adjNumber: MultiEntry[];
 
+  // --- MODIFIABLE FIELDS (Billing & Insurance Information)---
+
+  @Prop()
+  bill: number;
+
+  @Prop()
+  paid: number;
+
+  @Prop()
+  outstanding: number;
+
+  @Prop()
+  fds: Date;
+
+  @Prop()
+  lds: Date;
+
+  @Prop()
+  solDate: Date;
+
+  @Prop({
+    type: String,
+    enum: ['yes', 'no', 'not required'],  // Fixed: Restricts to yes/no/not required
+    default: 'not required',  // Default to 'not required' if not provided in XLSX
+    required: false  // Make optional
+  })
+  ledger: string;  // Renamed to lowercase for convention
+
+  @Prop({
+    type: String,
+    enum: ['yes', 'no', 'not required'],  // Fixed: Restricts to yes/no/not required
+    default: 'not required',  // Default to 'not required' if not provided in XLSX
+    required: false  // Make optional
+  })
+  hcf: string;  // Renamed to lowercase for convention
+
+  @Prop({
+    type: String,
+    enum: ['yes', 'no', 'not required'],  // Fixed: Restricts to yes/no/not required
+    default: 'not required',  // Default to 'not required' if not provided in XLSX
+    required: false  // Make optional
+  })
+  invoice: string;  // Renamed to lowercase for convention
+
+  @Prop({
+    type: String,
+    enum: ['yes', 'no', 'not required'],  // Fixed: Restricts to yes/no/not required
+    default: 'not required',  // Default to 'not required' if not provided in XLSX
+    required: false  // Make optional
+  })
+  signinSheet: string;  // Renamed to lowercase for convention
+
+  @Prop()
+  insurance: string;
+
   @Prop({ type: [MultiEntrySchema], default: [] })
-  doi: MultiEntry[];
+  claimNo: MultiEntry[];
+
+  @Prop()
+  adjuster: string;
+  
+  @Prop()
+  adjusterPhone: string;
+
+  @Prop()
+  adjusterFax: string;
+  
+  @Prop()
+  adjusterEmail: string;
+
+    @Prop()
+  defenseAttorney: string;
+
+  @Prop()
+  defenseAttorneyPhone: string;
+  
+  @Prop()
+  defenseAttorneyFax: string;
+  
+  @Prop()
+  defenseAttorneyEmail: string;
+
+//Case & Hearing Information(Exam Status)
 
   @Prop()
   hearingStatus: string;
@@ -134,31 +199,6 @@ export class Record {
   @Prop()
   crAmount: number;
   
-  @Prop()
-  adjuster: string;
-  
-  @Prop()
-  adjusterPhone: string;
-
-  @Prop()
-  adjusterFax: string;
-  
-  @Prop()
-  adjusterEmail: string;
-
-  // --- MODIFIABLE FOR FIRST 2 MONTHS ---
-  @Prop()
-  defenseAttorney: string;
-
-  @Prop()
-  defenseAttorneyPhone: string;
-  
-  @Prop()
-  defenseAttorneyFax: string;
-  
-  @Prop()
-  defenseAttorneyEmail: string;
-
   // --- COMMENTS & ASSIGNMENT ---
   @Prop({ type: [CommentSchema], default: [] })
   comments: Comment[];
