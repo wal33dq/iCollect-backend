@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Record, RecordDocument } from './schemas/record.schema';
+import { Record, RecordDocument } from './schemas/record.schema'; // Make sure Comment is exported from schema if not already
 import { CreateRecordDto } from './dto/create-record.dto';
 import * as XLSX from 'xlsx';
 import { UserRole } from '../users/schemas/user-role.enum';
@@ -11,6 +11,7 @@ export class RecordsService {
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
 
   async create(createRecordDto: CreateRecordDto): Promise<Record> {
+    // ... (existing create function)
     const payload: any = { ...createRecordDto };
     
     if (payload.assignedCollector) {
@@ -36,6 +37,7 @@ export class RecordsService {
   }
 
   async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; errors: string[] }> {
+    // ... (existing processUpload function)
     let workbook;
     try {
       workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -166,31 +168,93 @@ export class RecordsService {
     return { count, errors };
   }
 
-  async findAll(collectorId?: string): Promise<Record[]> {
-    let query: any = {};
+  async findAll(
+    collectorId?: string,
+    page: number = 1,
+    limit: number = 25,
+    search?: string,
+    category?: string,
+  ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
     
+    const skip = (page - 1) * limit;
+    const baseQuery: any = {};
+    let collectorObjectId: Types.ObjectId | null = null;
+
+    // 1. Filter by Collector
     if (collectorId) {
       if (collectorId === 'unassigned') {
-        query = { 
-          $or: [
+        baseQuery.$or = [
             { assignedCollector: null },
             { assignedCollector: { $exists: false } }
-          ]
-        };
+          ];
       } else if (Types.ObjectId.isValid(collectorId)) {
-        query = { assignedCollector: new Types.ObjectId(collectorId) };
+        collectorObjectId = new Types.ObjectId(collectorId);
+        baseQuery.assignedCollector = collectorObjectId;
       }
     }
     
-    return this.recordModel
-        .find(query)
+    // 2. Filter by Search Term
+    if (search) {
+      const searchRegex = new RegExp(search, 'i'); // Case-insensitive regex
+      baseQuery.$or = [
+        { provider: searchRegex },
+        { ptName: searchRegex },
+        { 'adjNumber.value': searchRegex },
+        { lienStatus: searchRegex },
+        { caseStatus: searchRegex },
+      ];
+    }
+
+    // 3. Filter by Category (using "has commented" logic)
+    if (category === 'history' && collectorObjectId) {
+      baseQuery['comments.author'] = collectorObjectId;
+    } else if (category === 'active' && collectorObjectId) {
+      baseQuery['comments.author'] = { $ne: collectorObjectId };
+    }
+
+    // 4. Execute Queries
+    const total = await this.recordModel.countDocuments(baseQuery);
+    
+    const data = await this.recordModel
+        .find(baseQuery)
         .populate('assignedCollector', 'username')
         .populate('comments.author', 'username')
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1 }) 
+        .skip(skip)
+        .limit(limit)
         .exec();
+
+    // 5. Process data to add lastCommentDate for 'history'
+    const processedData = data.map(doc => {
+        const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; // Convert to plain object and add new field
+        
+        if (category === 'history' && collectorObjectId) {
+            // Find the latest comment made by this user
+            const userComments = record.comments
+                .filter(c => {
+                    if (!c.author) return false;
+                    // Handle both populated (object) and non-populated (ID) author fields
+                    const authorId = (c.author as any)._id ? (c.author as any)._id.toString() : c.author.toString();
+                    return authorId === collectorObjectId.toString();
+                })
+                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort descending
+            
+            if (userComments.length > 0) {
+                record.lastCommentDate = userComments[0].createdAt;
+            } else {
+                record.lastCommentDate = null; // Should be rare given the query, but good to handle
+            }
+        }
+        
+        return record;
+    });
+
+    // 6. Return paginated response
+    return { data: processedData, total, page, limit };
   }
 
   async findById(id: string): Promise<Record> {
+    // ... (existing findById function)
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid record ID format.');
     }
@@ -209,9 +273,17 @@ export class RecordsService {
   }
 
   async reassignMany(recordIds: string[], collectorId: string): Promise<{ modifiedCount: number }> {
-    if (!Types.ObjectId.isValid(collectorId)) {
+    // ... (existing reassignMany function)
+    let collectorValue: Types.ObjectId | null = null;
+
+    if (collectorId === 'unassigned') {
+      collectorValue = null;
+    } else if (Types.ObjectId.isValid(collectorId)) {
+      collectorValue = new Types.ObjectId(collectorId);
+    } else {
       throw new BadRequestException('Invalid collectorId format.');
     }
+
     const validRecordIds = recordIds
       .filter(id => Types.ObjectId.isValid(id))
       .map(id => new Types.ObjectId(id));
@@ -220,26 +292,32 @@ export class RecordsService {
       throw new BadRequestException('One or more invalid record IDs provided.');
     }
 
-    const collectorObjectId = new Types.ObjectId(collectorId);
-
     const result = await this.recordModel.updateMany(
       { _id: { $in: validRecordIds } },
-      { $set: { assignedCollector: collectorObjectId } }
+      { $set: { assignedCollector: collectorValue } }
     );
 
     return { modifiedCount: result.modifiedCount };
   }
 
   async assignCollector(id: string, collectorId: string): Promise<Record> {
+    // ... (existing assignCollector function)
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
-    if (!Types.ObjectId.isValid(collectorId)) throw new BadRequestException('Invalid collectorId format.');
-
-    const collectorObjectId = new Types.ObjectId(collectorId);
+    
+    let collectorValue: Types.ObjectId | null = null;
+    
+    if (collectorId === 'unassigned') {
+      collectorValue = null;
+    } else if (Types.ObjectId.isValid(collectorId)) {
+      collectorValue = new Types.ObjectId(collectorId);
+    } else {
+      throw new BadRequestException('Invalid collectorId format.');
+    }
 
     const record = await this.recordModel
         .findByIdAndUpdate(
           id, 
-          { assignedCollector: collectorObjectId }, 
+          { assignedCollector: collectorValue }, 
           { new: true }
         )
         .populate('assignedCollector', 'username')
@@ -251,6 +329,7 @@ export class RecordsService {
   }
 
   async update(id: string, updateData: any, user: any): Promise<Record> {
+    // ... (existing update function)
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
 
     // Recalculate outstanding amount if bill or paid is being updated
@@ -289,6 +368,7 @@ export class RecordsService {
     },
     user: any
   ): Promise<Record> {
+    // ... (existing addComment function)
     if (!Types.ObjectId.isValid(recordId)) {
       throw new BadRequestException('Invalid record ID format.');
     }
@@ -343,6 +423,7 @@ export class RecordsService {
     updateData: { isCompleted?: boolean; },
     user: any
   ): Promise<Record> {
+    // ... (existing updateComment function)
     if (!Types.ObjectId.isValid(recordId)) throw new BadRequestException('Invalid record ID format.');
     if (!Types.ObjectId.isValid(commentId)) throw new BadRequestException('Invalid comment ID format.');
 
@@ -367,6 +448,7 @@ export class RecordsService {
   }
 
   async getScheduledEvents(userId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+    // ... (existing getScheduledEvents function)
     const commentConditions: any = {
       scheduledDate: { $exists: true, $ne: null },
       isCompleted: false,
@@ -427,6 +509,7 @@ export class RecordsService {
   }
 
   async getNotifications(userId?: string, userRole?: UserRole): Promise<any[]> {
+    // ... (existing getNotifications function)
     const now = new Date();
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
 
@@ -518,6 +601,7 @@ export class RecordsService {
   }
 
   async getOverdueEvents(): Promise<any[]> {
+    // ... (existing getOverdueEvents function)
     const now = new Date();
 
     const records = await this.recordModel.find({
@@ -597,6 +681,7 @@ export class RecordsService {
   }
   
   async getHearingEvents(startDate?: Date, endDate?: Date): Promise<any[]> {
+    // ... (existing getHearingEvents function)
     const query: any = {
       hearingDate: { $exists: true, $ne: null },
     };
@@ -632,6 +717,7 @@ export class RecordsService {
   }
 
   async deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
+    // ... (existing deleteMany function)
     const validIds = ids.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
     
     if (validIds.length !== ids.length) {
@@ -645,3 +731,4 @@ export class RecordsService {
     return { deletedCount: result.deletedCount };
   }
 }
+
