@@ -44,7 +44,7 @@ export class RecordsController {
     @UploadedFile(
       new ParseFilePipe({
         validators: [
-          new MaxFileSizeValidator({ maxSize: 10000000 }),
+          new MaxFileSizeValidator({ maxSize: 10000000 }), // 10MB
           new FileTypeValidator({ fileType: /^(application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|text\/csv)$/ }),
         ],
       }),
@@ -59,15 +59,33 @@ export class RecordsController {
   }
 
   @Get()
-  async getAllRecords(@Request() req, @Query('collectorId') collectorId?: string) {
+  async getAllRecords(
+    @Request() req, 
+    @Query('collectorId') collectorId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('category') category?: string,
+  ) {
     const user = req.user;
     let effectiveCollectorId = collectorId;
 
+    // Collectors can only see their own records
     if (user.role === UserRole.COLLECTOR) {
       effectiveCollectorId = user.userId;
     }
 
-    return this.recordsService.findAll(effectiveCollectorId);
+    // Parse pagination parameters
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, parseInt(limit, 10) || 25);
+
+    return this.recordsService.findAll(
+      effectiveCollectorId, 
+      pageNum, 
+      limitNum, 
+      search, 
+      category
+    );
   }
   
   @Get('hearing-events')
@@ -84,6 +102,7 @@ export class RecordsController {
   @Get('notifications')
   async getNotifications(@Request() req) {
     const user = req.user;
+    // Pass user role to service, collectorId is only needed if role is COLLECTOR
     const userId = user.role === UserRole.COLLECTOR ? user.userId : undefined;
     return this.recordsService.getNotifications(userId, user.role);
   }
@@ -115,12 +134,16 @@ export class RecordsController {
     const record = await this.recordsService.findById(id);
     
     const user = req.user;
+    // Security check: Collectors can only access their assigned records
+    // or records they have commented on (for history purposes)
     if (user.role === UserRole.COLLECTOR) {
+        // Check if assignedCollector is populated and matches
         const isAssigned = record.assignedCollector && 
                            typeof record.assignedCollector === 'object' && 
                            (record.assignedCollector as any)._id && 
                            (record.assignedCollector as any)._id.toString() === user.userId;
 
+        // Check if author in comments is populated and matches
         const hasCommented = record.comments.some(
             comment => comment.author && 
                        typeof comment.author === 'object' && 
@@ -129,6 +152,7 @@ export class RecordsController {
         );
 
         if (!isAssigned && !hasCommented) {
+            // Throw forbidden/not found, BadRequest is okay but 403/404 might be better
             throw new BadRequestException('You do not have access to this record');
         }
     }
@@ -154,7 +178,7 @@ export class RecordsController {
 
   @Put(':id/assign')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN) // Only Admin can assign/re-assign single record
   async assignCollector(
     @Param('id') id: string,
     @Body('collectorId') collectorId: string,
@@ -171,6 +195,7 @@ export class RecordsController {
     @Body() updateData: any,
     @Request() req,
   ) {
+    // Note: Add security here if collectors should only update their own records
     return this.recordsService.update(id, updateData, req.user);
   }
 
@@ -180,13 +205,14 @@ export class RecordsController {
     @Body() commentData: {
       text: string;
       status: string;
-      scheduledDate?: string;
+      scheduledDate?: string; // Expecting ISO string from frontend
       scheduledTime?: string;
     },
     @Request() req,
   ) {
     const comment = {
       ...commentData,
+      // Convert date string to Date object if provided
       scheduledDate: commentData.scheduledDate ? new Date(commentData.scheduledDate) : undefined,
     };
     
@@ -202,6 +228,7 @@ export class RecordsController {
     },
     @Request() req,
   ) {
+    // Note: Add security here if collectors should only update their own comments/records
     return this.recordsService.updateComment(id, commentId, updateData, req.user);
   }
 
