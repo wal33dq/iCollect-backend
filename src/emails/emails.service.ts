@@ -7,10 +7,12 @@ export class EmailsService {
     to,
     username,
     fullName,
+    password, // Added password
   }: {
     to: string;
     username: string;
     fullName?: string;
+    password?: string; // Added password (optional for safety)
   }) {
     // configure SMTP
     const transporter = nodemailer.createTransport({
@@ -23,12 +25,19 @@ export class EmailsService {
       },
     });
 
+    // Conditionally add password to HTML if it exists
+    const passwordHtml = password
+      ? `<p><strong>Password:</strong> ${password}</p>
+         <p>Please change this password after your first login.</p>`
+      : '';
+
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6;">
         <h2>Welcome to Hubur Enterprises!</h2>
         <p>Hello <strong>${fullName || username}</strong>,</p>
         <p>Your account has been successfully created.</p>
         <p><strong>Username:</strong> ${username}</p>
+        ${passwordHtml} 
         <p>We're excited to have you on board!</p>
         <br />
         <p>Best regards,<br />Hubur Support Team</p>

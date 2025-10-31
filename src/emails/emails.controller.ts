@@ -7,7 +7,13 @@ export class EmailsController {
 
   @Post('welcome')
   async sendWelcomeEmail(
-    @Body() body: { to: string; username: string; fullName?: string },
+    @Body()
+    body: {
+      to: string;
+      username: string;
+      fullName?: string;
+      password?: string; // Added password
+    },
   ) {
     return this.emailsService.sendWelcomeEmail(body);
   }
