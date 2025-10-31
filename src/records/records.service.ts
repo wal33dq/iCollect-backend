@@ -82,7 +82,7 @@ export class RecordsService {
         else if (header === 'taxid') record.taxId = value;
         else if (header === 'ptname') record.ptName = value;
         else if (header === 'dob') record.dob = value;
-        else if (header === 'ssnno') record.ssn = value;
+        else if (header === 'ssn') record.ssn = value; // FIX: Was 'ssnno'
         else if (header === 'employer') record.employer = value;
         else if (header === 'insurance') record.insurance = value;
         else if (header === 'bill') record.bill = value ? parseFloat(value) : null;
@@ -110,15 +110,17 @@ export class RecordsService {
         else if (header === 'lienstatus') record.lienStatus = value;
         else if (header === 'casestatus') record.caseStatus = value;
         else if (header === 'casedate') record.caseDate = value;
-        else if (header === 'c&ramount') record.crAmount = value ? parseFloat(value) : null;
+        else if (header === 'cramount') record.crAmount = value ? parseFloat(value) : null; // FIX: Was 'c&ramount'
         else if (header === 'adjuster') record.adjuster = value;
-        else if (header === 'a-ph') record.adjusterPhone = value;
-        else if (header === 'a-fax') record.adjusterFax = value;
-        else if (header === 'a-email') record.adjusterEmail = value;
-        else if (header === 'da') record.defenseAttorney = value;
-        else if (header === 'dapho') record.defenseAttorneyPhone = value;
-        else if (header === 'dafax') record.defenseAttorneyFax = value;
-        else if (header === 'daemail') record.defenseAttorneyEmail = value;
+        // --- FIX: Corrected header names to match sample file and DTO ---
+        else if (header === 'adjusterphone') record.adjusterPhone = value;
+        else if (header === 'adjusterfax') record.adjusterFax = value;
+        else if (header === 'adjusteremail') record.adjusterEmail = value;
+        // --- END FIX ---
+        else if (header === 'defenseattorney') record.defenseAttorney = value; // FIX: Was 'da'
+        else if (header === 'defenseattorneyphone') record.defenseAttorneyPhone = value; // FIX: Was 'dapho'
+        else if (header === 'defenseattorneyfax') record.defenseAttorneyFax = value; // FIX: Was 'dafax'
+        else if (header === 'defenseattorneyemail') record.defenseAttorneyEmail = value; // FIX: Was 'daemail'
         else if (header.startsWith('claimno.')) {
           const index = parseInt(header.split('.')[1]) - 1;
           if (value) record.claimNo[index] = { value };
