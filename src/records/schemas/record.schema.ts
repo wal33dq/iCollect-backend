@@ -55,22 +55,22 @@ export class Record {
   @Prop({ required: true, index: true, immutable: true })
   provider: string;
  
-  @Prop({ immutable: true })
+  @Prop()
   renderingFacility: string;
 
-  @Prop({immutable: true})
+  @Prop()
   taxId: string;
 
   @Prop({ required: true, index: true, immutable: true })
   ptName: string;
 
-  @Prop({ immutable: true })
+  @Prop()
   dob: Date;
 
-  @Prop({ immutable: true })
+  @Prop()
   ssn: string;
 
-  @Prop({ immutable: true })
+  @Prop()
   employer: string;
 
  @Prop({ type: [MultiEntrySchema], default: [] })
