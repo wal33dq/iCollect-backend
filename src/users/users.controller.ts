@@ -44,7 +44,21 @@ export class UsersController {
     }
 
     /**
-     * Updates a user by their ID.
+     * [NEW] Updates the currently authenticated user's own profile.
+     * Any authenticated user can perform this action for themselves.
+     */
+    @UseGuards(JwtAuthGuard)
+    @Patch('profile/me')
+    updateMyProfile(@Request() req, @Body() updateUserDto: UpdateUserDto) {
+        // Get the user ID from the authenticated request token
+        const myUserId = req.user.userId; 
+        
+        // We pass req.user as the 'actor' for the service logic
+        return this.usersService.update(myUserId, updateUserDto, req.user);
+    }
+
+    /**
+     * [ADMIN] Updates a user by their ID.
      * Only Admins and Super Admins can perform this action.
      * We pass the requesting user (`req.user`) to the service for permission checks.
      */

@@ -43,25 +43,50 @@ export class UsersService {
       throw new NotFoundException(`User with ID "${id}" not found`);
     }
 
+    const actorId = actor.userId;
     const actorRole = actor.role;
     const targetRole = targetUser.role;
 
-    // Rule: An Admin cannot edit a Super Admin.
-    if (actorRole === UserRole.ADMIN && targetRole === UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Admins cannot edit Super Admins.');
+    // Check if the actor is editing their own profile
+    const isEditingSelf = actorId === id;
+
+    if (isEditingSelf) {
+      // A user is updating their own profile.
+      // Rule: A user cannot change their own role.
+      if (updateUserDto.role && updateUserDto.role !== targetRole) {
+        throw new ForbiddenException('You cannot change your own role.');
+      }
+      // To be safe, explicitly remove 'role' from the DTO
+      delete updateUserDto.role;
+
+    } else {
+      // An admin is updating another user (not themselves).
+      // Rule: An Admin cannot edit a Super Admin.
+      if (actorRole === UserRole.ADMIN && targetRole === UserRole.SUPER_ADMIN) {
+        throw new ForbiddenException('Admins cannot edit Super Admins.');
+      }
+
+      // Rule: An Admin cannot promote a user to Super Admin.
+      if (actorRole === UserRole.ADMIN && updateUserDto.role === UserRole.SUPER_ADMIN && targetRole !== UserRole.SUPER_ADMIN) {
+        throw new ForbiddenException('Admins cannot promote users to Super Admin.');
+      }
     }
 
-    // Rule: An Admin cannot promote a user to Super Admin.
-    if (actorRole === UserRole.ADMIN && updateUserDto.role === UserRole.SUPER_ADMIN && targetRole !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Admins cannot promote users to Super Admin.');
-    }
 
     // If a new password is provided, hash it before saving.
     if (updateUserDto.password) {
-      updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
+      // Only hash if password is not an empty string
+      if (updateUserDto.password.trim().length > 0) {
+        updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
+      } else {
+        // Don't update password if it's just whitespace or empty
+        delete updateUserDto.password;
+      }
     }
 
-    const existingUser = await this.userModel.findByIdAndUpdate(id, updateUserDto, { new: true }).select('-password').exec();
+    // Use $set to only update fields that are present in the DTO
+    const existingUser = await this.userModel.findByIdAndUpdate(id, { $set: updateUserDto }, { new: true }).select('-password').exec();
+    
     if (!existingUser) {
       throw new NotFoundException(`User with ID "${id}" not found`);
     }
@@ -94,4 +119,3 @@ export class UsersService {
     return deletedUser;
   }
 }
-
