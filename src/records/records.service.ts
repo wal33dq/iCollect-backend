@@ -204,6 +204,7 @@ export class RecordsService {
         { 'adjNumber.value': searchRegex },
         { lienStatus: searchRegex },
         { caseStatus: searchRegex },
+        { 'comments.status': searchRegex }, // <-- UPDATED: Search comment status
       ];
     }
 
@@ -211,8 +212,10 @@ export class RecordsService {
     if (category === 'history' && collectorObjectId) {
       baseQuery['comments.author'] = collectorObjectId;
     } else if (category === 'active' && collectorObjectId) {
+      // This logic might need refinement if search is also active
       baseQuery['comments.author'] = { $ne: collectorObjectId };
     }
+    // --- Removed the 'offer' category logic ---
 
     // 4. Execute Queries
     const total = await this.recordModel.countDocuments(baseQuery);
