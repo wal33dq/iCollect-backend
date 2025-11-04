@@ -22,9 +22,9 @@ export class RecordsService {
     }
 
     // Calculate outstanding if bill and paid are provided
-    if (payload.bill !== undefined && payload.paid !== undefined) {
+    if (payload.bill !== undefined && payload.paid !== undefined && payload.bill !== null && payload.paid !== null) {
       payload.outstanding = payload.bill - payload.paid;
-    } else if (payload.bill !== undefined) {
+    } else if (payload.bill !== undefined && payload.bill !== null) {
       // If only bill is provided, outstanding is the same as bill (assuming paid is 0)
       payload.outstanding = payload.bill;
     }
@@ -54,21 +54,46 @@ export class RecordsService {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // --- FIX: Use `raw: false` and `defval: null` ---
-    // `raw: false` reads the formatted string (e.g., "10/25/2024" or "10:00 AM")
-    // instead of the raw serial number (e.g., 45590).
-    // This ensures that dates, times, and DOIs are read as strings,
-    // matching what you see in Excel.
     const data: any[][] = XLSX.utils.sheet_to_json(sheet, { 
       header: 1, 
-      raw: false,    // <-- This is the main fix
+      raw: false,    // <-- This reads the formatted string
       defval: null   // <-- This handles blank cells cleanly
     });
-    // --- END FIX ---
 
     if (data.length === 0) {
       return { count: 0, errors: ['No data found in the sheet.'] };
     }
+    
+    // --- FIX: Helper function to parse currency/number strings ---
+    const parseCurrency = (value: any): number | null => {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      if (typeof value === 'number') {
+        return value; // It's already a number
+      }
+
+      let cleanStr = String(value);
+      
+      // Check for negative numbers represented with parentheses, e.g., ($1,250.75)
+      const isNegativeInParens = cleanStr.startsWith('(') && cleanStr.endsWith(')');
+      
+      // Remove currency symbols, commas, whitespace, and parentheses
+      // This will turn "$1,250.75" into "1250.75"
+      // And "($1,250.75)" into "1250.75"
+      cleanStr = cleanStr.replace(/[$,€£¥\s()]/g, '');
+
+      const num = parseFloat(cleanStr);
+
+      if (isNaN(num)) {
+        return null; // Could not be parsed
+      }
+
+      // Apply negative sign if it was in parentheses
+      return isNegativeInParens ? -num : num;
+    };
+    // --- END FIX ---
 
     const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
 
@@ -85,8 +110,7 @@ export class RecordsService {
 
       for (let j = 0; j < headers.length; j++) {
         let value = row[j];
-        // We now check only for null, as defval: null is set
-        if (value === null) continue;
+        if (value === null) continue; // Skip blank cells
 
         const header = headers[j].toLowerCase();
 
@@ -94,27 +118,25 @@ export class RecordsService {
         else if (header === 'renderingfacility') record.renderingFacility = value;
         else if (header === 'taxid') record.taxId = value;
         else if (header === 'ptname') record.ptName = value;
-        else if (header === 'dob') record.dob = value; // Will be a string (e.g., "10/25/2024"), Mongoose will parse it
-        else if (header === 'ssn') record.ssn = value; // FIX: Was 'ssnno'
+        else if (header === 'dob') record.dob = value; 
+        else if (header === 'ssn') record.ssn = value; 
         else if (header === 'employer') record.employer = value;
         else if (header === 'insurance') record.insurance = value;
-        else if (header === 'bill') record.bill = value ? parseFloat(value) : null;
-        // --- Updated Fields Start ---
-        else if (header === 'paid') record.paid = value ? parseFloat(value) : null;
-        else if (header === 'outstanding') record.outstanding = value ? parseFloat(value) : null;
-        // --- Updated Fields End ---
-        else if (header === 'fds') record.fds = value; // Will be a string, Mongoose will parse it
-        else if (header === 'lds') record.lds = value; // Will be a string, Mongoose will parse it
+        // --- FIX: Use parseCurrency for amount fields ---
+        else if (header === 'bill') record.bill = parseCurrency(value);
+        else if (header === 'paid') record.paid = parseCurrency(value);
+        else if (header === 'outstanding') record.outstanding = parseCurrency(value);
+        // --- END FIX ---
+        else if (header === 'fds') record.fds = value; 
+        else if (header === 'lds') record.lds = value; 
         else if (header === 'ledger') record.ledger = value;
-        // --- Updated Fields Start ---
         else if (header === 'hcf') record.hcf = value;
         else if (header === 'invoice') record.invoice = value;
         else if (header === 'signinsheet') record.signinSheet = value;
-        // --- Updated Fields End ---
-        else if (header === 'soldate') record.solDate = value; // Will be a string, Mongoose will parse it
+        else if (header === 'soldate') record.solDate = value; 
         else if (header === 'hearingstatus') record.hearingStatus = value;
-        else if (header === 'hearingdate') record.hearingDate = value; // Will be a string, Mongoose will parse it
-        else if (header === 'hearingtime') record.hearingTime = value; // Will be a string (e.g., "10:00 AM")
+        else if (header === 'hearingdate') record.hearingDate = value; 
+        else if (header === 'hearingtime') record.hearingTime = value; 
         else if (header === 'judgename') record.judgeName = value;
         else if (header === 'courtroomlink') record.courtRoomlink = value;
         else if (header === 'judgephone') record.judgePhone = value;
@@ -122,18 +144,18 @@ export class RecordsService {
         else if (header === 'boardlocation') record.boardLocation = value;
         else if (header === 'lienstatus') record.lienStatus = value;
         else if (header === 'casestatus') record.caseStatus = value;
-        else if (header === 'casedate') record.caseDate = value; // Will be a string, Mongoose will parse it
-        else if (header === 'cramount') record.crAmount = value ? parseFloat(value) : null; // FIX: Was 'c&ramount'
+        else if (header === 'casedate') record.caseDate = value; 
+        // --- FIX: Use parseCurrency for amount fields ---
+        else if (header === 'cramount') record.crAmount = parseCurrency(value); 
+        // --- END FIX ---
         else if (header === 'adjuster') record.adjuster = value;
-        // --- FIX: Corrected header names to match sample file and DTO ---
         else if (header === 'adjusterphone') record.adjusterPhone = value;
         else if (header === 'adjusterfax') record.adjusterFax = value;
         else if (header === 'adjusteremail') record.adjusterEmail = value;
-        // --- END FIX ---
-        else if (header === 'defenseattorney') record.defenseAttorney = value; // FIX: Was 'da'
-        else if (header === 'defenseattorneyphone') record.defenseAttorneyPhone = value; // FIX: Was 'dapho'
-        else if (header === 'defenseattorneyfax') record.defenseAttorneyFax = value; // FIX: Was 'dafax'
-        else if (header === 'defenseattorneyemail') record.defenseAttorneyEmail = value; // FIX: Was 'daemail'
+        else if (header === 'defenseattorney') record.defenseAttorney = value; 
+        else if (header === 'defenseattorneyphone') record.defenseAttorneyPhone = value; 
+        else if (header === 'defenseattorneyfax') record.defenseAttorneyFax = value; 
+        else if (header === 'defenseattorneyemail') record.defenseAttorneyEmail = value; 
         else if (header.startsWith('claimno.')) {
           const index = parseInt(header.split('.')[1]) - 1;
           if (value) record.claimNo[index] = { value };
@@ -142,7 +164,7 @@ export class RecordsService {
           if (value) record.adjNumber[index] = { value };
         } else if (header.startsWith('doi.')) {
           const index = parseInt(header.split('.')[1]) - 1;
-          if (value) record.doi[index] = { value }; // `value` will be a string (e.g., "10/25/2024")
+          if (value) record.doi[index] = { value }; 
         }
       }
 
