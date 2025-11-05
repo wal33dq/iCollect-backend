@@ -9,7 +9,7 @@ import {
   Param,
   Body,
   BadRequestException,
-  Request,
+  Request, // Make sure Request is imported
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator,
@@ -89,14 +89,14 @@ export class RecordsController {
   }
   
  /**
-   * [NEW] Returns aggregated summary data for the pivot table.
-   * Assumes Admin/Super Admin role, like other reporting endpoints.
+   * [UPDATED] Returns aggregated summary data for the pivot table.
+   * Now filters data based on user role (Admin vs Collector).
    */
   @Get('summary')
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.COLLECTOR)
-  async getSummary() {
-    return this.recordsService.getSummary();
+  async getSummary(@Request() req) { // <-- Get the request object
+    return this.recordsService.getSummary(req.user); // <-- Pass the user to the service
   }
 
   @Get('hearing-events')

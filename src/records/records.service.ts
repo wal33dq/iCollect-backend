@@ -617,7 +617,7 @@ export class RecordsService {
                     scheduledDate: latestIncompleteComment.scheduledDate,
                     scheduledTime: latestIncompleteComment.scheduledTime,
                     author: latestIncompleteComment.author,
-                    assignedCollector: record.assignedCollector,
+                  assignedCollector: record.assignedCollector,
                     isOverdue: isOverdue,
                 });
             }
@@ -770,86 +770,121 @@ export class RecordsService {
 
     return { deletedCount: result.deletedCount };
   }
-
+    
   /**
    * [UPDATED] Aggregates records to create a summary by provider.
    * This now includes counts from record 'caseStatus'
    * AND counts of records with 'out of sol' comment status.
+   * [NEW] Filters records by assignedCollector if the user is a Collector.
    */
-  async getSummary(): Promise<any> {
-    const aggregationPipeline = [
-      {
-        $facet: {
-          byCaseStatus: [
-            {
-              $match: {
-                provider: { $exists: true, $nin: [null, ""] },
-                caseStatus: { $exists: true, $nin: [null, ""] }
-              }
-            },
-            {
-              $group: {
-                _id: {
-                  provider: "$provider",
-                  caseStatus: "$caseStatus"
-                },
-                count: { $sum: 1 }
-              }
-            },
-            {
-              $project: {
-                _id: 0,
-                provider: "$_id.provider",
-                status: "$_id.caseStatus",
-                count: "$count"
-              }
-            }
-          ] as any[],
-          byCommentStatus: [
-            {
-              $match: {
-                provider: { $exists: true, $nin: [null, ""] },
-                "comments.status": { $regex: /^out of sol$/i }
-              }
-            },
-            {
-              $group: {
-                _id: "$provider",
-                count: { $sum: 1 }
-              }
-            },
-            {
-              $project: {
-                _id: 0,
-                provider: "$_id",
-                status: "OUT OF SOL",
-                count: "$count"
-              }
-            }
-          ] as any[]
+  async getSummary(user: any): Promise<any> { // <-- Accept user object
+    
+    const aggregationPipeline: any[] = []; // <-- Use an array to build the pipeline
+
+    // 1. [NEW] Add role-based filter
+    // If the user is a Collector, add a $match stage at the very beginning
+    if (user.role === UserRole.COLLECTOR) {
+      if (!user.userId || !Types.ObjectId.isValid(user.userId)) {
+        // Collector has no valid ID, return empty
+        return []; 
+      }
+      aggregationPipeline.push({
+        $match: {
+          assignedCollector: new Types.ObjectId(user.userId)
         }
-      },
+      });
+    }
+
+    // 2. Add the $facet stage (this is the core logic from the previous step)
+    aggregationPipeline.push({
+      // Facet to run two aggregations in parallel
+      $facet: {
+        // Facet 1: Group by caseStatus (existing logic)
+        byCaseStatus: [
+          {
+            $match: {
+              provider: { $exists: true, $nin: [null, ""] },
+              caseStatus: { $exists: true, $nin: [null, ""] }
+            }
+          },
+          {
+            // Group by provider and caseStatus to count records
+            $group: {
+              _id: {
+                provider: "$provider",
+                caseStatus: "$caseStatus"
+              },
+              count: { $sum: 1 }
+            }
+          },
+          {
+            // Project to a flat structure
+            $project: {
+              _id: 0,
+              provider: "$_id.provider",
+              status: "$_id.caseStatus",
+              count: "$count"
+            }
+          }
+        ],
+        // Facet 2: Group by "out of sol" comment status
+        byCommentStatus: [
+          {
+            // Find records with at least one "out of sol" comment (case-insensitive)
+            $match: {
+              provider: { $exists: true, $nin: [null, ""] },
+              "comments.status": { $regex: /^out of sol$/i }
+            }
+          },
+          {
+            // Group by provider, counting each matching record once
+            $group: {
+              _id: "$provider",
+              count: { $sum: 1 }
+            }
+          },
+          {
+            // Project to the same flat structure
+            $project: {
+              _id: 0,
+              provider: "$_id",
+              status: "OUT OF SOL", // Standardize header name
+              count: "$count"
+            }
+          }
+        ]
+      }
+    });
+
+    // 3. Add the subsequent processing stages
+    aggregationPipeline.push(
       {
+        // Combine the results from both facets into a single array
         $project: {
           allStatuses: { $concatArrays: ["$byCaseStatus", "$byCommentStatus"] }
         }
       },
       {
+        // Unwind the combined array to process each status object
         $unwind: "$allStatuses"
       },
       {
+        // Re-group by provider to create the final structure
         $group: {
           _id: "$allStatuses.provider",
+          // Push all statuses (from both sources) into the statuses array
           statuses: {
             $push: {
               status: "$allStatuses.status",
               count: "$allStatuses.count"
             }
           },
+          // The new totalCount is the sum of all counts for this provider
           totalCount: { $sum: "$allStatuses.count" }
         }
       },
       {
+        // Clean up the output to match the frontend's expectation
         $project: {
           _id: 0,
           provider: "$_id",
@@ -858,11 +893,12 @@ export class RecordsService {
         }
       },
       {
+        // Sort by provider name alphabetically
         $sort: {
           provider: 1
         }
       }
-    ] as any[];
+    );
 
     return this.recordModel.aggregate(aggregationPipeline);
   }
