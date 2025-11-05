@@ -1,10 +1,18 @@
-import { Controller, Get, Request, UseGuards, Query, Patch, Body, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Request, UseGuards, Query, Patch, Body, Param, Delete, Put, ForbiddenException } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
 import { UserRole } from './schemas/user-role.enum';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+// In a real app, this DTO (Data Transfer Object) would be in its own file
+// (e.g., 'src/users/dto/change-password.dto.ts')
+// and would have validation decorators (@IsNotEmpty(), @MinLength())
+export class ChangePasswordDto {
+  oldPassword: string;
+  newPassword: string;
+}
 
 @Controller('users')
 export class UsersController {
@@ -19,7 +27,6 @@ export class UsersController {
 
     /**
      * Finds all users with the 'Collector' role.
-     * This is used by the Admin Page to populate dropdowns for assigning records.
      */
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
@@ -30,37 +37,55 @@ export class UsersController {
 
     /**
      * Finds all users, with an option to filter by role.
-     * This is used by the Admin Page to get a list of all 'Collectors'.
-     * Only an Admin should be able to access this list.
      */
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
     @Get()
     findAll(@Query('role') role: UserRole) {
-        // If a role is provided in the query (e.g., /api/users?role=Collector),
-        // it will be passed to the service to filter the results.
         const query = role ? { role } : {};
         return this.usersService.findAll(query);
     }
 
     /**
-     * [NEW] Updates the currently authenticated user's own profile.
-     * Any authenticated user can perform this action for themselves.
+     * Updates the currently authenticated user's own profile.
      */
     @UseGuards(JwtAuthGuard)
     @Patch('profile/me')
     updateMyProfile(@Request() req, @Body() updateUserDto: UpdateUserDto) {
-        // Get the user ID from the authenticated request token
         const myUserId = req.user.userId; 
-        
-        // We pass req.user as the 'actor' for the service logic
         return this.usersService.update(myUserId, updateUserDto, req.user);
     }
 
     /**
+     * [NEW] Changes a user's password.
+     * This endpoint matches the frontend call: PUT /api/users/:id/change-password
+     * A user can change their own password.
+     * An Admin can also use this to change another user's password.
+     */
+    @UseGuards(JwtAuthGuard)
+    @Put(':id/change-password') 
+    changePassword(
+        @Request() req, 
+        @Param('id') id: string, 
+        @Body() changePasswordDto: ChangePasswordDto
+    ) {
+        const actor = req.user; // The authenticated user making the request
+        const targetUserId = id; // The user profile being changed
+
+        // Security Check: If the actor is NOT an admin, they can ONLY change their own password.
+        if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SUPER_ADMIN) {
+            if (actor.userId !== targetUserId) {
+                throw new ForbiddenException('You are not authorized to perform this action.');
+            }
+        }
+        
+        // Pass to the service to handle the logic
+        return this.usersService.changePassword(targetUserId, changePasswordDto, actor);
+    }
+
+
+    /**
      * [ADMIN] Updates a user by their ID.
-     * Only Admins and Super Admins can perform this action.
-     * We pass the requesting user (`req.user`) to the service for permission checks.
      */
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
@@ -71,8 +96,6 @@ export class UsersController {
 
     /**
      * Deletes a user by their ID.
-     * Only Admins and Super Admins can perform this action.
-     * We pass the requesting user (`req.user`) to the service for permission checks.
      */
     @UseGuards(JwtAuthGuard, RolesGuard)
     @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
