@@ -775,18 +775,17 @@ export class RecordsService {
    * [UPDATED] Aggregates records to create a summary by provider.
    * This now includes counts from record 'caseStatus'
    * AND counts of records with 'out of sol' comment status.
-   * [NEW] Filters records by assignedCollector if the user is a Collector.
+   * Filters records by assignedCollector if the user is a Collector.
+   * [NEW] Standardizes and filters for specific statuses.
    */
   async getSummary(user: any): Promise<any> { // <-- Accept user object
     
     const aggregationPipeline: any[] = []; // <-- Use an array to build the pipeline
 
-    // 1. [NEW] Add role-based filter
-    // If the user is a Collector, add a $match stage at the very beginning
+    // 1. Add role-based filter
     if (user.role === UserRole.COLLECTOR) {
       if (!user.userId || !Types.ObjectId.isValid(user.userId)) {
-        // Collector has no valid ID, return empty
-        return []; 
+        return []; // Collector has no valid ID, return empty
       }
       aggregationPipeline.push({
         $match: {
@@ -795,11 +794,10 @@ export class RecordsService {
       });
     }
 
-    // 2. Add the $facet stage (this is the core logic from the previous step)
+    // 2. Add the $facet stage
     aggregationPipeline.push({
-      // Facet to run two aggregations in parallel
       $facet: {
-        // Facet 1: Group by caseStatus (existing logic)
+        // Facet 1: Group by caseStatus
         byCaseStatus: [
           {
             $match: {
@@ -808,11 +806,36 @@ export class RecordsService {
             }
           },
           {
-            // Group by provider and caseStatus to count records
+            // Standardize status names
+            $project: {
+              provider: "$provider",
+              standardizedStatus: {
+                $switch: {
+                  branches: [
+                    {
+                      case: { $regexMatch: { input: "$caseStatus", regex: /c ?& ?r.*granted/i } },
+                      then: "C & R (GRANTED)"
+                    },
+                    {
+                      case: { $regexMatch: { input: "$caseStatus", regex: /cic.*pend/i } },
+                      then: "CIC PENDING"
+                    },
+                    {
+                      case: { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
+                      then: "SETTLED"
+                    }
+                  ],
+                  default: "OTHER" // Give other statuses a name
+                }
+              }
+            }
+          },
+          {
+            // Group by provider and standardized status
             $group: {
               _id: {
                 provider: "$provider",
-                caseStatus: "$caseStatus"
+                status: "$standardizedStatus"
               },
               count: { $sum: 1 }
             }
@@ -822,7 +845,7 @@ export class RecordsService {
             $project: {
               _id: 0,
               provider: "$_id.provider",
-              status: "$_id.caseStatus",
+              status: "$_id.status",
               count: "$count"
             }
           }
@@ -830,25 +853,22 @@ export class RecordsService {
         // Facet 2: Group by "out of sol" comment status
         byCommentStatus: [
           {
-            // Find records with at least one "out of sol" comment (case-insensitive)
             $match: {
               provider: { $exists: true, $nin: [null, ""] },
               "comments.status": { $regex: /^out of sol$/i }
             }
           },
           {
-            // Group by provider, counting each matching record once
             $group: {
               _id: "$provider",
               count: { $sum: 1 }
             }
           },
           {
-            // Project to the same flat structure
             $project: {
               _id: 0,
               provider: "$_id",
-              status: "OUT OF SOL", // Standardize header name
+              status: "OUT OF SOL", // Standardized header name
               count: "$count"
             }
           }
@@ -869,17 +889,29 @@ export class RecordsService {
         $unwind: "$allStatuses"
       },
       {
+         // [NEW] Filter to *only* include the statuses we care about
+         $match: {
+          "allStatuses.status": { 
+            $in: [
+              "C & R (GRANTED)", 
+              "CIC PENDING", 
+              "SETTLED", 
+              "OUT OF SOL"
+            ] 
+          }
+        }
+      },
+      {
         // Re-group by provider to create the final structure
         $group: {
           _id: "$allStatuses.provider",
-          // Push all statuses (from both sources) into the statuses array
           statuses: {
             $push: {
               status: "$allStatuses.status",
               count: "$allStatuses.count"
             }
           },
-          // The new totalCount is the sum of all counts for this provider
+          // Sum only the counts of the filtered statuses
           totalCount: { $sum: "$allStatuses.count" }
         }
       },
