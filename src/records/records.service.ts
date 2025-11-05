@@ -770,4 +770,100 @@ export class RecordsService {
 
     return { deletedCount: result.deletedCount };
   }
+
+  /**
+   * [UPDATED] Aggregates records to create a summary by provider.
+   * This now includes counts from record 'caseStatus'
+   * AND counts of records with 'out of sol' comment status.
+   */
+  async getSummary(): Promise<any> {
+    const aggregationPipeline = [
+      {
+        $facet: {
+          byCaseStatus: [
+            {
+              $match: {
+                provider: { $exists: true, $nin: [null, ""] },
+                caseStatus: { $exists: true, $nin: [null, ""] }
+              }
+            },
+            {
+              $group: {
+                _id: {
+                  provider: "$provider",
+                  caseStatus: "$caseStatus"
+                },
+                count: { $sum: 1 }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                provider: "$_id.provider",
+                status: "$_id.caseStatus",
+                count: "$count"
+              }
+            }
+          ] as any[],
+          byCommentStatus: [
+            {
+              $match: {
+                provider: { $exists: true, $nin: [null, ""] },
+                "comments.status": { $regex: /^out of sol$/i }
+              }
+            },
+            {
+              $group: {
+                _id: "$provider",
+                count: { $sum: 1 }
+              }
+            },
+            {
+              $project: {
+                _id: 0,
+                provider: "$_id",
+                status: "OUT OF SOL",
+                count: "$count"
+              }
+            }
+          ] as any[]
+        }
+      },
+      {
+        $project: {
+          allStatuses: { $concatArrays: ["$byCaseStatus", "$byCommentStatus"] }
+        }
+      },
+      {
+        $unwind: "$allStatuses"
+      },
+      {
+        $group: {
+          _id: "$allStatuses.provider",
+          statuses: {
+            $push: {
+              status: "$allStatuses.status",
+              count: "$allStatuses.count"
+            }
+          },
+          totalCount: { $sum: "$allStatuses.count" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          provider: "$_id",
+          statuses: 1,
+          totalCount: 1
+        }
+      },
+      {
+        $sort: {
+          provider: 1
+        }
+      }
+    ] as any[];
+
+    return this.recordModel.aggregate(aggregationPipeline);
+  }
 }

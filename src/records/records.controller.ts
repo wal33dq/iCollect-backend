@@ -88,6 +88,17 @@ export class RecordsController {
     );
   }
   
+ /**
+   * [NEW] Returns aggregated summary data for the pivot table.
+   * Assumes Admin/Super Admin role, like other reporting endpoints.
+   */
+  @Get('summary')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.COLLECTOR)
+  async getSummary() {
+    return this.recordsService.getSummary();
+  }
+
   @Get('hearing-events')
   async getHearingEvents(
     @Query('startDate') startDate?: string,
