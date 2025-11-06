@@ -36,6 +36,7 @@ export class EmailsService {
         <h2>Welcome to Hubur Enterprises!</h2>
         <p>Hello <strong>${fullName || username}</strong>,</p>
         <p>Your account has been successfully created.</p>
+        <p><strong>Platform URL:</strong> <a href="https://icollect.huburllc.com/login">https://icollect.huburllc.com/login</a></p>
         <p><strong>Username:</strong> ${username}</p>
         ${passwordHtml} 
         <p>We're excited to have you on board!</p>
