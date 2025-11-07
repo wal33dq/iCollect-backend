@@ -190,7 +190,13 @@ export class Record {
   @Prop()
   lienStatus: string;
   
-  @Prop({ index: true })
+  @Prop({ 
+    index: true,
+    type: String,
+    // MODIFIED: Added enum validation for the new dropdown values
+    enum: ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED','ADR CASE - SETTED AND PAID ADR','ORDER OF DISMISAAL OF CASE', ''],
+    required: false
+  })
   caseStatus: string;
   
   @Prop()

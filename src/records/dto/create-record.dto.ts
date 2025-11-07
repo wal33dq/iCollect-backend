@@ -175,9 +175,14 @@ export class CreateRecordDto {
   @IsString()
   lienStatus?: string;
 
-  @ApiProperty({ description: 'Case status' })
+  @ApiProperty({ 
+    description: 'Case status', 
+    // MODIFIED: Added enum to ApiProperty
+    enum: ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED','ADR CASE - SETTED AND PAID ADR','ORDER OF DISMISAAL OF CASE', ''] 
+  })
   @IsOptional()
-  @IsString()
+  // MODIFIED: Changed IsString to IsEnum
+  @IsEnum(['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED','ADR CASE - SETTED AND PAID ADR','ORDER OF DISMISAAL OF CASE', '']) 
   caseStatus?: string;
 
   @ApiProperty({ description: 'Case date' })
