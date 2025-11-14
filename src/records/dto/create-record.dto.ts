@@ -195,6 +195,38 @@ export class CreateRecordDto {
   @IsNumber()
   crAmount?: number;
 
+  @ApiProperty({
+  description: 'DOR Filed By',
+  enum: ['HUBUR', 'CLIENT', 'ANOTHER LIEN CLAIMANT'],
+ })
+ @IsOptional()
+ @IsEnum(['HUBUR', 'CLIENT', 'ANOTHER LIEN CLAIMANT'])
+ dorFiledBy?: string;
+
+ @ApiProperty({
+  description: '4903.8 STATUS',
+  enum: ['YES', 'NO'],
+ })
+ @IsOptional()
+ @IsEnum(['YES', 'NO'])
+ status4903_8?: string;
+ 
+ @ApiProperty({
+  description: 'PMR STATUS',
+  enum: ['YES', 'NO'],
+ })
+ @IsOptional()
+ @IsEnum(['YES', 'NO'])
+ pmrStatus?: string;
+ 
+ @ApiProperty({
+  description: 'JUDGE ORDER STATUS',
+  enum: ['GRANTED', 'PENDING'],
+ }) 
+ @IsOptional()
+ @IsEnum(['GRANTED', 'PENDING'])
+ judgeOrderStatus?: string;
+
   @ApiProperty({ description: 'Adjuster' })
   @IsOptional()
   @IsString()

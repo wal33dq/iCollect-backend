@@ -5,6 +5,7 @@ import { Record, RecordDocument } from './schemas/record.schema'; // Make sure C
 import { CreateRecordDto } from './dto/create-record.dto';
 import * as XLSX from 'xlsx';
 import { UserRole } from '../users/schemas/user-role.enum';
+import { stat } from 'fs';
 
 @Injectable()
 export class RecordsService {
@@ -178,6 +179,11 @@ export class RecordsService {
         else if (header === 'casedate') record.caseDate = value; 
         // --- FIX: Use parseCurrency for amount fields ---
         else if (header === 'cramount') record.crAmount = parseCurrency(value); 
+        // --- Add New values in Judgement Information ---
+        else if (header === 'dorFiledBy') record.dorFiledBy = value;
+        else if (header === 'status4903_8') record.status4903_8 = value;
+        else if (header === 'pmrStatus') record.pmrStatus = value;
+        else if (header === 'judgeOrderStatus') record.judgeOrderStatus = value;
         // --- END FIX ---
         else if (header === 'adjuster') record.adjuster = value;
         else if (header === 'adjusterphone') record.adjusterPhone = value;
@@ -771,7 +777,9 @@ export class RecordsService {
 
     const events = records.map(record => ({
       recordId: record._id,
+      provider: record.provider,
       ptName: record.ptName,
+      adjNumber: record.adjNumber,
       hearingStatus: record.hearingStatus,
       hearingDate: record.hearingDate,
       hearingTime: record.hearingTime,
@@ -780,6 +788,10 @@ export class RecordsService {
       judgePhone: record.judgePhone,
       AccesCode: record.AccesCode,
       boardLocation: record.boardLocation,
+      pmrStatus: record.pmrStatus,
+      dorFiledBy: record.dorFiledBy,
+      status4903_8: record.status4903_8,
+      judgeOrderStatus: record.judgeOrderStatus,
       assignedCollector: record.assignedCollector,
     }));
     

@@ -22,7 +22,7 @@ class Comment {
 
   @Prop({ 
     required: true,
-    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax', 'offer', 'settle', 'wfp', 'payment_received', 'closed']
+    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax', 'offer', 'settle', 'wfp', 'payment_received', 'closed','hearing_remarks']
   })
   status: string;
 
@@ -204,6 +204,34 @@ export class Record {
   
   @Prop()
   crAmount: number;
+
+  @Prop({
+  type: String,
+  enum: ['HUBUR', 'CLIENT', 'ANOTHER LIEN CLAIMANT'],
+  default: null,
+ })
+ dorFiledBy?: string;
+
+ @Prop({
+  type: String,
+  enum: ['YES', 'NO'],
+  default: null,
+ })
+ status4903_8?: string;
+
+ @Prop({
+  type: String,
+  enum: ['YES', 'NO'],
+  default: null,
+ })
+ pmrStatus?: string;
+
+ @Prop({
+  type: String,
+  enum: ['GRANTED', 'PENDING'],
+  default: null,
+ })
+ judgeOrderStatus?: string;
   
   // --- COMMENTS & ASSIGNMENT ---
   @Prop({ type: [CommentSchema], default: [] })
