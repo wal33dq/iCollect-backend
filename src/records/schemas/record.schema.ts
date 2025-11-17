@@ -169,8 +169,12 @@ export class Record {
   @Prop()
   hearingDate: Date;
   
-  @Prop()
-  hearingTime: string;
+ @Prop({
+  type: String,
+  enum: ['AM', 'PM'],
+  default: null,
+ })
+ hearingTime?: string;
   
   @Prop()
   judgeName: string;
@@ -206,23 +210,23 @@ export class Record {
   crAmount: number;
 
   @Prop({
-  type: String,
-  enum: ['HUBUR', 'CLIENT', 'ANOTHER LIEN CLAIMANT'],
-  default: null,
+    type: String,
+    enum: ['HUBUR', 'CLIENT', 'ANOTHER LIEN CLAIMANT'],
+    default: null,
  })
  dorFiledBy?: string;
 
  @Prop({
-  type: String,
-  enum: ['YES', 'NO'],
-  default: null,
+    type: String,
+    enum: ['YES', 'NO'],
+    default: null,
  })
  status4903_8?: string;
 
  @Prop({
-  type: String,
-  enum: ['YES', 'NO'],
-  default: null,
+    type: String,
+    enum: ['YES', 'NO'],
+    default: null,
  })
  pmrStatus?: string;
 
