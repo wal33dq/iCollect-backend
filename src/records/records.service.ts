@@ -180,10 +180,10 @@ export class RecordsService {
         // --- FIX: Use parseCurrency for amount fields ---
         else if (header === 'cramount') record.crAmount = parseCurrency(value); 
         // --- Add New values in Judgement Information ---
-        else if (header === 'dorFiledBy') record.dorFiledBy = value;
+        else if (header === 'dorfiledby') record.dorFiledBy = value;
         else if (header === 'status4903_8') record.status4903_8 = value;
-        else if (header === 'pmrStatus') record.pmrStatus = value;
-        else if (header === 'judgeOrderStatus') record.judgeOrderStatus = value;
+        else if (header === 'pmrstatus') record.pmrStatus = value;
+        else if (header === 'judgeorderstatus') record.judgeOrderStatus = value;
         // --- END FIX ---
         else if (header === 'adjuster') record.adjuster = value;
         else if (header === 'adjusterphone') record.adjusterPhone = value;
@@ -780,6 +780,7 @@ export class RecordsService {
       provider: record.provider,
       ptName: record.ptName,
       adjNumber: record.adjNumber,
+      caseStatus: record.caseStatus,
       hearingStatus: record.hearingStatus,
       hearingDate: record.hearingDate,
       hearingTime: record.hearingTime,
