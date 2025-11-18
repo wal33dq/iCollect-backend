@@ -449,8 +449,11 @@ export class RecordsService {
     if (!Types.ObjectId.isValid(recordId)) {
       throw new BadRequestException('Invalid record ID format.');
     }
-    if (commentData.status === 'closed' && user.role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Only administrators can close records');
+    
+    // MODIFIED: Restrict 'closed' and 'payment_received' to Admins and Super Admins
+    if ((commentData.status === 'closed' || commentData.status === 'payment_received') && 
+        (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN)) {
+      throw new ForbiddenException('Only administrators or super admins can use this status.');
     }
 
     await this.recordModel.updateOne(
