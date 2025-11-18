@@ -41,7 +41,7 @@ export class RecordsService {
     // ... (existing processUpload function)
     let workbook;
     try {
-      // Add cellDates: true to attempt parsing dates, but raw: false later is more robust
+      // Add cellDates: true to attempt parsing dates, but raw: false later is more robust...
       workbook = XLSX.read(buffer, { type: 'buffer' });
     } catch (err) {
       try {
