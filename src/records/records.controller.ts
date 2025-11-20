@@ -9,12 +9,14 @@ import {
   Param,
   Body,
   BadRequestException,
-  Request, // Make sure Request is imported
+  Request,
   ParseFilePipe,
   MaxFileSizeValidator,
   FileTypeValidator,
   Query,
   Delete,
+  ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,6 +29,8 @@ import { CreateRecordDto } from './dto/create-record.dto';
 @Controller('records')
 @UseGuards(JwtAuthGuard)
 export class RecordsController {
+  private readonly logger = new Logger(RecordsController.name);
+
   constructor(private readonly recordsService: RecordsService) {}
 
   @Post()
@@ -68,19 +72,15 @@ export class RecordsController {
     @Query('category') category?: string,
   ) {
     const user = req.user;
-    let effectiveCollectorId = collectorId;
-
-    // Collectors can only see their own records
-    if (user.role === UserRole.COLLECTOR) {
-      effectiveCollectorId = user.userId;
-    }
 
     // Parse pagination parameters
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, parseInt(limit, 10) || 25);
 
+    // Pass the entire user object to the service for strict filtering
     return this.recordsService.findAll(
-      effectiveCollectorId, 
+      user,
+      collectorId, 
       pageNum, 
       limitNum, 
       search, 
@@ -88,15 +88,11 @@ export class RecordsController {
     );
   }
   
- /**
-   * [UPDATED] Returns aggregated summary data for the pivot table.
-   * Now filters data based on user role (Admin vs Collector).
-   */
   @Get('summary')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.COLLECTOR)
-  async getSummary(@Request() req) { // <-- Get the request object
-    return this.recordsService.getSummary(req.user); // <-- Pass the user to the service
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.COLLECTOR, UserRole.PROVIDER)
+  async getSummary(@Request() req) { 
+    return this.recordsService.getSummary(req.user); 
   }
 
   @Get('hearing-events')
@@ -113,7 +109,6 @@ export class RecordsController {
   @Get('notifications')
   async getNotifications(@Request() req) {
     const user = req.user;
-    // Pass user role to service, collectorId is only needed if role is COLLECTOR
     const userId = user.role === UserRole.COLLECTOR ? user.userId : undefined;
     return this.recordsService.getNotifications(userId, user.role);
   }
@@ -143,18 +138,15 @@ export class RecordsController {
   @Get(':id')
   async getRecord(@Param('id') id: string, @Request() req) {
     const record = await this.recordsService.findById(id);
-    
     const user = req.user;
-    // Security check: Collectors can only access their assigned records
-    // or records they have commented on (for history purposes)
+    
+    // Security check: Collectors
     if (user.role === UserRole.COLLECTOR) {
-        // Check if assignedCollector is populated and matches
         const isAssigned = record.assignedCollector && 
                            typeof record.assignedCollector === 'object' && 
                            (record.assignedCollector as any)._id && 
                            (record.assignedCollector as any)._id.toString() === user.userId;
 
-        // Check if author in comments is populated and matches
         const hasCommented = record.comments.some(
             comment => comment.author && 
                        typeof comment.author === 'object' && 
@@ -163,8 +155,24 @@ export class RecordsController {
         );
 
         if (!isAssigned && !hasCommented) {
-            // Throw forbidden/not found, BadRequest is okay but 403/404 might be better
             throw new BadRequestException('You do not have access to this record');
+        }
+    }
+
+    // [STRICT + ROBUST] Security check: Providers
+    if (user.role === UserRole.PROVIDER) {
+        const userIdentifier = (user.fullName || user.username || '').trim().toLowerCase();
+        const recordProvider = record.provider ? record.provider.trim().toLowerCase() : '';
+
+        // If the user has no name in the token/profile, deny access immediately
+        if (!userIdentifier) {
+            this.logger.error(`Provider access denied: User ${user.username} has no fullName or username`);
+            throw new ForbiddenException('Your account profile is incomplete. Access Denied.');
+        }
+
+        // Strict comparison
+        if (recordProvider !== userIdentifier) {
+             throw new ForbiddenException(`Access Denied: This record belongs to ${record.provider}.`);
         }
     }
     
@@ -189,7 +197,7 @@ export class RecordsController {
 
   @Put(':id/assign')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN) // Only Admin can assign/re-assign single record
+  @Roles(UserRole.ADMIN) 
   async assignCollector(
     @Param('id') id: string,
     @Body('collectorId') collectorId: string,
@@ -206,7 +214,19 @@ export class RecordsController {
     @Body() updateData: any,
     @Request() req,
   ) {
-    // Note: Add security here if collectors should only update their own records
+    const user = req.user;
+
+    // [STRICT + ROBUST] Security check for updates by Provider
+    if (user.role === UserRole.PROVIDER) {
+       const record = await this.recordsService.findById(id);
+       const userIdentifier = (user.fullName || user.username || '').trim().toLowerCase();
+       const recordProvider = record.provider ? record.provider.trim().toLowerCase() : '';
+
+       if (!userIdentifier || recordProvider !== userIdentifier) {
+           throw new ForbiddenException('You do not have permission to update this record.');
+       }
+    }
+
     return this.recordsService.update(id, updateData, req.user);
   }
 
@@ -216,14 +236,26 @@ export class RecordsController {
     @Body() commentData: {
       text: string;
       status: string;
-      scheduledDate?: string; // Expecting ISO string from frontend
+      scheduledDate?: string; 
       scheduledTime?: string;
     },
     @Request() req,
   ) {
+    const user = req.user;
+
+    // [STRICT + ROBUST] Security check for comments by Provider
+    if (user.role === UserRole.PROVIDER) {
+       const record = await this.recordsService.findById(id);
+       const userIdentifier = (user.fullName || user.username || '').trim().toLowerCase();
+       const recordProvider = record.provider ? record.provider.trim().toLowerCase() : '';
+
+       if (!userIdentifier || recordProvider !== userIdentifier) {
+           throw new ForbiddenException('You do not have permission to comment on this record.');
+       }
+    }
+
     const comment = {
       ...commentData,
-      // Convert date string to Date object if provided
       scheduledDate: commentData.scheduledDate ? new Date(commentData.scheduledDate) : undefined,
     };
     
@@ -239,7 +271,6 @@ export class RecordsController {
     },
     @Request() req,
   ) {
-    // Note: Add security here if collectors should only update their own comments/records
     return this.recordsService.updateComment(id, commentId, updateData, req.user);
   }
 
