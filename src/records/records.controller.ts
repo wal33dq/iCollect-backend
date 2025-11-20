@@ -197,11 +197,31 @@ export class RecordsController {
 
   @Put(':id/assign')
   @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN) 
+  @Roles(UserRole.ADMIN, UserRole.PROVIDER) 
   async assignCollector(
     @Param('id') id: string,
     @Body('collectorId') collectorId: string,
+    @Request() req,
   ) {
+    const user = req.user;
+
+    // [STRICT + ROBUST] Security check for assignment by Provider
+    if (user.role === UserRole.PROVIDER) {
+        const record = await this.recordsService.findById(id);
+        const userIdentifier = (user.fullName || user.username || '').trim().toLowerCase();
+        const recordProvider = record.provider ? record.provider.trim().toLowerCase() : '';
+ 
+        // If the user has no name in the token/profile, deny access immediately
+        if (!userIdentifier) {
+             throw new ForbiddenException('Your account profile is incomplete. Access Denied.');
+        }
+ 
+        // Strict comparison - Provider can only assign their own records
+        if (recordProvider !== userIdentifier) {
+             throw new ForbiddenException(`Access Denied: You can only assign records belonging to ${record.provider}.`);
+        }
+     }
+
     if (!collectorId) {
         throw new BadRequestException('collectorId is required.');
     }
