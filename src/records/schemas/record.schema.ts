@@ -22,7 +22,7 @@ class Comment {
 
   @Prop({ 
     required: true,
-    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax', 'offer', 'settle','request_to_close', 'wfp', 'payment_received', 'closed','file_pmr','file_lien','hearing_remarks']
+    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax','received_email_fax', 'offer', 'settle','request_to_close', 'wfp', 'payment_received', 'closed','file_pmr','file_lien','hearing_remarks']
   })
   status: string;
 
