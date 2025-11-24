@@ -22,7 +22,7 @@ class Comment {
 
   @Prop({ 
     required: true,
-    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax','received_email_fax', 'offer', 'settle','request_to_close', 'wfp', 'payment_received', 'closed','file_pmr','file_lien','hearing_remarks']
+    enum: ['callback', 'lvm', 'spoke_to', 'sent_email_fax', 'offer', 'settle','request_to_close', 'wfp', 'payment_received', 'closed','file_pmr','file_lien','hearing_remarks']
   })
   status: string;
 
@@ -74,7 +74,7 @@ export class Record {
   employer: string;
 
  @Prop({ type: [MultiEntrySchema], default: [] })
-  doi: MultiEntry[];
+ doi: MultiEntry[];
 
   @Prop({ type: [MultiEntrySchema], default: [] })
   adjNumber: MultiEntry[];
@@ -243,6 +243,10 @@ export class Record {
   
   @Prop({ type: Types.ObjectId, ref: 'User', index: true })
   assignedCollector: User;
+
+  // NEW: Track when the record was assigned to the current collector
+  @Prop({ default: Date.now }) 
+  assignedAt: Date;
 
   @Prop({ default: Date.now, immutable: true })
   recordCreatedAt: Date;

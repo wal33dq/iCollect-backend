@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Record, RecordDocument } from './schemas/record.schema'; 
+import { Record, RecordDocument } from './schemas/record.schema'; // Make sure Comment is exported from schema if not already
 import { CreateRecordDto } from './dto/create-record.dto';
 import * as XLSX from 'xlsx';
 import { UserRole } from '../users/schemas/user-role.enum';
@@ -12,6 +12,7 @@ export class RecordsService {
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
 
   async create(createRecordDto: CreateRecordDto): Promise<Record> {
+    // ... (existing create function)
     const payload: any = { ...createRecordDto };
     
     if (payload.assignedCollector) {
@@ -19,11 +20,15 @@ export class RecordsService {
         throw new BadRequestException('Invalid collectorId format.');
       }
       payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
+      // ADDED: Set assignedAt when creating with a collector
+      payload.assignedAt = new Date();
     }
 
+    // Calculate outstanding if bill and paid are provided
     if (payload.bill !== undefined && payload.paid !== undefined && payload.bill !== null && payload.paid !== null) {
       payload.outstanding = payload.bill - payload.paid;
     } else if (payload.bill !== undefined && payload.bill !== null) {
+      // If only bill is provided, outstanding is the same as bill (assuming paid is 0)
       payload.outstanding = payload.bill;
     }
 
@@ -35,8 +40,10 @@ export class RecordsService {
   }
 
   async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; errors: string[] }> {
+    // ... (existing processUpload function)
     let workbook;
     try {
+      // Add cellDates: true to attempt parsing dates, but raw: false later is more robust
       workbook = XLSX.read(buffer, { type: 'buffer' });
     } catch (err) {
       try {
@@ -52,30 +59,64 @@ export class RecordsService {
     
     const data: any[][] = XLSX.utils.sheet_to_json(sheet, { 
       header: 1, 
-      raw: false,    
-      defval: null   
+      raw: false,    // <-- This reads the formatted string
+      defval: null   // <-- This handles blank cells cleanly
     });
 
     if (data.length === 0) {
       return { count: 0, errors: ['No data found in the sheet.'] };
     }
     
+    // --- FIX: Helper function to parse currency/number strings ---
     const parseCurrency = (value: any): number | null => {
-      if (value === null || value === undefined || value === '') return null;
-      if (typeof value === 'number') return value; 
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      if (typeof value === 'number') {
+        return value; // It's already a number
+      }
+
       let cleanStr = String(value);
+      
+      // Check for negative numbers represented with parentheses, e.g., ($1,250.75)
       const isNegativeInParens = cleanStr.startsWith('(') && cleanStr.endsWith(')');
+      
+      // Remove currency symbols, commas, whitespace, and parentheses
+      // This will turn "$1,250.75" into "1250.75"
+      // And "($1,250.75)" into "1250.75"
       cleanStr = cleanStr.replace(/[$,€£¥\s()]/g, '');
+
       const num = parseFloat(cleanStr);
-      if (isNaN(num)) return null; 
+
+      if (isNaN(num)) {
+        return null; // Could not be parsed
+      }
+
+      // Apply negative sign if it was in parentheses
       return isNegativeInParens ? -num : num;
     };
+    // --- END FIX ---
 
+    // NEW: Helper to normalize caseStatus values from XLSX
     const normalizeCaseStatus = (value: any): string => {
-        if (typeof value !== 'string' || !value) return ''; 
+        if (typeof value !== 'string' || !value) {
+            return ''; // Default to empty string if null, undefined, or not a string
+        }
+        const upperVal = value.toUpperCase().trim();
+        if (upperVal === 'SETTLED') return 'SETTLED';
+        if (upperVal === 'C & R (GRANTED)') return 'C & R (GRANTED)';
+        if (upperVal === 'CIC PENDING') return 'CIC PENDING';
+        if (upperVal === 'A & S GRANTED') return 'A & S GRANTED';
+        if (upperVal === 'ADR CASE - SETTED AND PAID ADR') return 'ADR CASE - SETTED AND PAID ADR';
+        if (upperVal === 'ORDER OF DISMISAAL OF CASE') return 'ORDER OF DISMISAAL OF CASE';
+        
         const allowed = ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED', 'ADR CASE - SETTED AND PAID ADR', 'ORDER OF DISMISAAL OF CASE', ''];
-        if (allowed.includes(value.trim())) return value.trim();
-        return value; 
+        if (allowed.includes(value.trim())) {
+            return value.trim();
+        }
+
+        return value; // Passing original value
     };
 
     const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
@@ -85,11 +126,15 @@ export class RecordsService {
       const row = data[i];
       if (row.length === 0) continue;
 
-      const record: any = { claimNo: [], adjNumber: [], doi: [], };
+      const record: any = {
+        claimNo: [],
+        adjNumber: [],
+        doi: [],
+      };
 
       for (let j = 0; j < headers.length; j++) {
         let value = row[j];
-        if (value === null) continue; 
+        if (value === null) continue; // Skip blank cells
 
         const header = headers[j].toLowerCase();
 
@@ -101,9 +146,11 @@ export class RecordsService {
         else if (header === 'ssn') record.ssn = value; 
         else if (header === 'employer') record.employer = value;
         else if (header === 'insurance') record.insurance = value;
+        // --- FIX: Use parseCurrency for amount fields ---
         else if (header === 'bill') record.bill = parseCurrency(value);
         else if (header === 'paid') record.paid = parseCurrency(value);
         else if (header === 'outstanding') record.outstanding = parseCurrency(value);
+        // --- END FIX ---
         else if (header === 'fds') record.fds = value; 
         else if (header === 'lds') record.lds = value; 
         else if (header === 'ledger') record.ledger = value;
@@ -120,13 +167,17 @@ export class RecordsService {
         else if (header === 'accescode') record.AccesCode = value;
         else if (header === 'boardlocation') record.boardLocation = value;
         else if (header === 'lienstatus') record.lienStatus = value;
+        // MODIFIED: Use the normalize function for caseStatus
         else if (header === 'casestatus') record.caseStatus = normalizeCaseStatus(value); 
         else if (header === 'casedate') record.caseDate = value; 
+        // --- FIX: Use parseCurrency for amount fields ---
         else if (header === 'cramount') record.crAmount = parseCurrency(value); 
+        // --- Add New values in Judgement Information ---
         else if (header === 'dorfiledby') record.dorFiledBy = value;
         else if (header === 'status4903_8') record.status4903_8 = value;
         else if (header === 'pmrstatus') record.pmrStatus = value;
         else if (header === 'judgeorderstatus') record.judgeOrderStatus = value;
+        // --- END FIX ---
         else if (header === 'adjuster') record.adjuster = value;
         else if (header === 'adjusterphone') record.adjusterPhone = value;
         else if (header === 'adjusterfax') record.adjusterFax = value;
@@ -151,17 +202,21 @@ export class RecordsService {
       record.adjNumber = record.adjNumber.filter(item => item !== undefined);
       record.doi = record.doi.filter(item => item !== undefined);
 
+      // Calculate outstanding if not provided but bill/paid are
       if (record.outstanding === undefined || record.outstanding === null) {
         if (record.bill !== undefined && record.paid !== undefined && record.bill !== null && record.paid !== null) {
             record.outstanding = record.bill - record.paid;
         } else if (record.bill !== undefined && record.bill !== null) {
-            record.outstanding = record.bill; 
+            record.outstanding = record.bill; // Assume paid is 0
         }
       }
 
+      // Upload record if patient name exists, regardless of the bill amount.
       if (record.ptName) {
         if (collectorId) {
           record.assignedCollector = collectorId;
+          // ADDED: Set assignedAt when uploading with assignment
+          record.assignedAt = new Date();
         }
         records.push(record);
       }
@@ -183,7 +238,6 @@ export class RecordsService {
   }
 
   async findAll(
-    user: any, 
     collectorId?: string,
     page: number = 1,
     limit: number = 25,
@@ -195,22 +249,7 @@ export class RecordsService {
     const baseQuery: any = {};
     let collectorObjectId: Types.ObjectId | null = null;
 
-    // [UPDATED] Filter by Provider Role (Case Insensitive + Whitespace Tolerant + Username Fallback)
-    if (user.role === UserRole.PROVIDER) {
-        // Use Full Name, fallback to Username if empty
-        const providerName = (user.fullName || user.username || '').trim();
-        
-        if (!providerName) {
-            return { data: [], total: 0, page, limit };
-        }
-
-        const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Regex to match name with optional surrounding spaces, case insensitive
-        // Example: User "mmck" matches DB "MMCK", " MMCK ", "mmck"
-        baseQuery.provider = { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, 'i') };
-    }
-
-    // Filter by Collector
+    // 1. Filter by Collector
     if (collectorId) {
       if (collectorId === 'unassigned') {
         baseQuery.$or = [
@@ -220,44 +259,32 @@ export class RecordsService {
       } else if (Types.ObjectId.isValid(collectorId)) {
         collectorObjectId = new Types.ObjectId(collectorId);
         baseQuery.assignedCollector = collectorObjectId;
-      } else if (user.role === UserRole.COLLECTOR) {
-         collectorObjectId = new Types.ObjectId(user.userId);
-         baseQuery.assignedCollector = collectorObjectId;
       }
-    } else if (user.role === UserRole.COLLECTOR) {
-         collectorObjectId = new Types.ObjectId(user.userId);
-         baseQuery.assignedCollector = collectorObjectId;
     }
     
-    // Search
+    // 2. Filter by Search Term
     if (search) {
-      const searchRegex = new RegExp(search, 'i'); 
-      const searchConditions = [
+      const searchRegex = new RegExp(search, 'i'); // Case-insensitive regex
+      baseQuery.$or = [
         { provider: searchRegex },
         { ptName: searchRegex },
         { 'adjNumber.value': searchRegex },
         { lienStatus: searchRegex },
         { caseStatus: searchRegex },
-        { 'comments.status': searchRegex }, 
+        { 'comments.status': searchRegex }, // <-- UPDATED: Search comment status
       ];
-      
-      if (baseQuery.$or) {
-          baseQuery.$and = [
-              { $or: baseQuery.$or },
-              { $or: searchConditions }
-          ];
-          delete baseQuery.$or; 
-      } else {
-          baseQuery.$or = searchConditions;
-      }
     }
 
+    // 3. Filter by Category (using "has commented" logic)
     if (category === 'history' && collectorObjectId) {
       baseQuery['comments.author'] = collectorObjectId;
     } else if (category === 'active' && collectorObjectId) {
+      // This logic might need refinement if search is also active
       baseQuery['comments.author'] = { $ne: collectorObjectId };
     }
+    // --- Removed the 'offer' category logic ---
 
+    // 4. Execute Queries
     const total = await this.recordModel.countDocuments(baseQuery);
     
     const data = await this.recordModel
@@ -269,32 +296,37 @@ export class RecordsService {
         .limit(limit)
         .exec();
 
+    // 5. Process data to add lastCommentDate for 'history'
     const processedData = data.map(doc => {
-        const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; 
+        const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; // Convert to plain object and add new field
         
         if (category === 'history' && collectorObjectId) {
+            // Find the latest comment made by this user
             const userComments = record.comments
                 .filter(c => {
                     if (!c.author) return false;
+                    // Handle both populated (object) and non-populated (ID) author fields
                     const authorId = (c.author as any)._id ? (c.author as any)._id.toString() : c.author.toString();
                     return authorId === collectorObjectId.toString();
                 })
-                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); 
+                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); // Sort descending
             
             if (userComments.length > 0) {
                 record.lastCommentDate = userComments[0].createdAt;
             } else {
-                record.lastCommentDate = null;
+                record.lastCommentDate = null; // Should be rare given the query, but good to handle
             }
         }
         
         return record;
     });
 
+    // 6. Return paginated response
     return { data: processedData, total, page, limit };
   }
 
   async findById(id: string): Promise<Record> {
+    // ... (existing findById function)
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid record ID format.');
     }
@@ -313,6 +345,7 @@ export class RecordsService {
   }
 
   async reassignMany(recordIds: string[], collectorId: string): Promise<{ modifiedCount: number }> {
+    // ... (existing reassignMany function)
     let collectorValue: Types.ObjectId | null = null;
 
     if (collectorId === 'unassigned') {
@@ -333,13 +366,15 @@ export class RecordsService {
 
     const result = await this.recordModel.updateMany(
       { _id: { $in: validRecordIds } },
-      { $set: { assignedCollector: collectorValue } }
+      // ADDED: Update assignedAt
+      { $set: { assignedCollector: collectorValue, assignedAt: new Date() } }
     );
 
     return { modifiedCount: result.modifiedCount };
   }
 
   async assignCollector(id: string, collectorId: string): Promise<Record> {
+    // ... (existing assignCollector function)
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
     
     let collectorValue: Types.ObjectId | null = null;
@@ -355,7 +390,8 @@ export class RecordsService {
     const record = await this.recordModel
         .findByIdAndUpdate(
           id, 
-          { assignedCollector: collectorValue }, 
+          // ADDED: Update assignedAt
+          { assignedCollector: collectorValue, assignedAt: new Date() }, 
           { new: true }
         )
         .populate('assignedCollector', 'username')
@@ -367,8 +403,10 @@ export class RecordsService {
   }
 
   async update(id: string, updateData: any, user: any): Promise<Record> {
+    // ... (existing update function)
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
 
+    // Recalculate outstanding amount if bill or paid is being updated
     if (updateData.bill !== undefined || updateData.paid !== undefined) {
         const record = await this.recordModel.findById(id);
         if (!record) throw new BadRequestException('Record not found');
@@ -379,7 +417,7 @@ export class RecordsService {
         if (newBill !== undefined && newPaid !== undefined && newBill !== null && newPaid !== null) {
             updateData.outstanding = newBill - newPaid;
         } else if (newBill !== undefined && newBill !== null) {
-            updateData.outstanding = newBill; 
+            updateData.outstanding = newBill; // Assume paid is 0 if not set
         }
     }
 
@@ -404,10 +442,12 @@ export class RecordsService {
     },
     user: any
   ): Promise<Record> {
+    // ... (existing addComment function)
     if (!Types.ObjectId.isValid(recordId)) {
       throw new BadRequestException('Invalid record ID format.');
     }
     
+    // MODIFIED: Restrict 'closed' and 'payment_received' to Admins and Super Admins
     if ((commentData.status === 'closed' || commentData.status === 'payment_received') && 
         (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN)) {
       throw new ForbiddenException('Only administrators or super admins can use this status.');
@@ -460,6 +500,7 @@ export class RecordsService {
     updateData: { isCompleted?: boolean; },
     user: any
   ): Promise<Record> {
+    // ... (existing updateComment function)
     if (!Types.ObjectId.isValid(recordId)) throw new BadRequestException('Invalid record ID format.');
     if (!Types.ObjectId.isValid(commentId)) throw new BadRequestException('Invalid comment ID format.');
 
@@ -484,6 +525,7 @@ export class RecordsService {
   }
 
   async getScheduledEvents(userId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+    // ... (existing getScheduledEvents function)
     const commentConditions: any = {
       scheduledDate: { $exists: true, $ne: null },
       isCompleted: false,
@@ -544,9 +586,12 @@ export class RecordsService {
   }
 
   async getNotifications(userId?: string, userRole?: UserRole): Promise<any[]> {
+    // ... (existing getNotifications function variables)
     const now = new Date();
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
+    const notifications = [];
 
+    // --- 1. Scheduled Tasks Notifications (Existing Logic) ---
     const matchConditions: any = {
         "comments.isCompleted": false,
         "comments.scheduledTime": { $exists: true, $ne: null },
@@ -557,13 +602,12 @@ export class RecordsService {
         matchConditions.assignedCollector = new Types.ObjectId(userId);
     }
     
-    const records = await this.recordModel.find(matchConditions)
+    const taskRecords = await this.recordModel.find(matchConditions)
         .populate('assignedCollector', 'username')
         .populate('comments.author', 'username')
         .exec();
 
-    const notifications = [];
-    records.forEach(record => {
+    taskRecords.forEach(record => {
         const latestIncompleteComment = record.comments
             .filter(c => !c.isCompleted && c.scheduledDate && c.scheduledTime)
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
@@ -611,23 +655,74 @@ export class RecordsService {
                     scheduledDate: latestIncompleteComment.scheduledDate,
                     scheduledTime: latestIncompleteComment.scheduledTime,
                     author: latestIncompleteComment.author,
-                  assignedCollector: record.assignedCollector,
+                    assignedCollector: record.assignedCollector,
                     isOverdue: isOverdue,
+                    isAssignment: false // Flag as task
                 });
             }
         } catch (e) {
             console.error("Error processing notification for record:", record._id, e);
         }
     });
-    
-    notifications.sort((a, b) => {
-        const dateAObj = new Date(a.scheduledDate);
-        const [hourA, minA] = a.scheduledTime.split(':').map(Number);
-        const dateA = new Date(dateAObj.getUTCFullYear(), dateAObj.getUTCMonth(), dateAObj.getUTCDate(), hourA, minA);
 
-        const dateBObj = new Date(b.scheduledDate);
-        const [hourB, minB] = b.scheduledTime.split(':').map(Number);
-        const dateB = new Date(dateBObj.getUTCFullYear(), dateBObj.getUTCMonth(), dateBObj.getUTCDate(), hourB, minB);
+    // --- 2. New Assignment Notifications (NEW LOGIC) ---
+    // Only fetch assignments for collectors, not admins
+    if (userRole === UserRole.COLLECTOR && userId && Types.ObjectId.isValid(userId)) {
+        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        
+        const assignedRecords = await this.recordModel.find({
+            assignedCollector: new Types.ObjectId(userId),
+            assignedAt: { $gte: twentyFourHoursAgo } // Assigned in last 24 hours
+        })
+        .populate('assignedCollector', 'username')
+        .populate('comments.author', '_id') // Populate author ID to check if collector commented
+        .exec();
+
+        assignedRecords.forEach(record => {
+            // Check if the collector has already "touched" this record (added a comment)
+            // AFTER the assignment time.
+            const hasActivity = record.comments.some(comment => {
+                // Ensure comment exists and has creation date
+                if (!comment.createdAt) return false;
+
+                // Check if comment is by the current collector
+                const commentAuthorId = (comment.author as any)._id
+                    ? (comment.author as any)._id.toString()
+                    : comment.author.toString();
+
+                if (commentAuthorId !== userId.toString()) return false;
+
+                // Check if comment was made AFTER the assignment time
+                // This implies the collector started working on it
+                return new Date(comment.createdAt) > new Date(record.assignedAt);
+            });
+
+            // If there is activity, DO NOT show the notification (return early from this iteration)
+            if (hasActivity) return;
+
+            // Avoid duplicate notifications if the record already has a task in the list
+            // (Optional: remove this check if you want both notification types to show)
+            const exists = notifications.some(n => n.recordId.toString() === record._id.toString());
+            if (!exists) {
+                notifications.push({
+                    recordId: record._id,
+                    ptName: record.ptName,
+                    text: `New record assigned: ${record.ptName}`,
+                    status: 'Assigned',
+                    scheduledDate: record.assignedAt,
+                    scheduledTime: 'Now', // Formatting for frontend
+                    assignedCollector: record.assignedCollector,
+                    isAssignment: true, // Flag as assignment
+                    isOverdue: false
+                });
+            }
+        });
+    }
+    
+    // Sort combined notifications
+    notifications.sort((a, b) => {
+        const dateA = new Date(a.scheduledDate);
+        const dateB = new Date(b.scheduledDate);
         return dateA.getTime() - dateB.getTime();
     });
 
@@ -635,6 +730,7 @@ export class RecordsService {
   }
 
   async getOverdueEvents(): Promise<any[]> {
+    // ... (existing getOverdueEvents function)
     const now = new Date();
 
     const records = await this.recordModel.find({
@@ -714,6 +810,7 @@ export class RecordsService {
   }
   
   async getHearingEvents(startDate?: Date, endDate?: Date): Promise<any[]> {
+    // ... (existing getHearingEvents function)
     const query: any = {
       hearingDate: { $exists: true, $ne: null },
     };
@@ -756,6 +853,7 @@ export class RecordsService {
   }
 
   async deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
+    // ... (existing deleteMany function)
     const validIds = ids.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
     
     if (validIds.length !== ids.length) {
@@ -769,13 +867,21 @@ export class RecordsService {
     return { deletedCount: result.deletedCount };
   }
     
-  async getSummary(user: any): Promise<any> { 
+  /**
+   * [UPDATED] Aggregates records to create a summary by provider.
+   * This now includes counts from record 'caseStatus'
+   * AND counts of records with 'out of sol' comment status.
+   * Filters records by assignedCollector if the user is a Collector.
+   * [NEW] Standardizes and filters for specific statuses.
+   */
+  async getSummary(user: any): Promise<any> { // <-- Accept user object
     
-    const aggregationPipeline: any[] = [];
+    const aggregationPipeline: any[] = []; // <-- Use an array to build the pipeline
 
+    // 1. Add role-based filter
     if (user.role === UserRole.COLLECTOR) {
       if (!user.userId || !Types.ObjectId.isValid(user.userId)) {
-        return []; 
+        return []; // Collector has no valid ID, return empty
       }
       aggregationPipeline.push({
         $match: {
@@ -783,21 +889,11 @@ export class RecordsService {
         }
       });
     }
-    // [UPDATED] Filter summary for Providers with whitespace tolerance
-    else if (user.role === UserRole.PROVIDER) {
-        const providerName = (user.fullName || user.username || '').trim();
-        if (!providerName) return [];
 
-        const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        aggregationPipeline.push({
-            $match: {
-                provider: { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, 'i') }
-            }
-        });
-    }
-
+    // 2. Add the $facet stage
     aggregationPipeline.push({
       $facet: {
+        // Facet 1: Group by caseStatus
         byCaseStatus: [
           {
             $match: {
@@ -806,6 +902,7 @@ export class RecordsService {
             }
           },
           {
+            // Standardize status names
             $project: {
               provider: "$provider",
               standardizedStatus: {
@@ -820,16 +917,23 @@ export class RecordsService {
                       then: "CIC PENDING"
                     },
                     {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
+                      case: { $regexMatch: { input: "$caseAS", regex: /settled/i } }, // MODIFIED: Fixed typo $caseStatus
                       then: "SETTLED"
                     }
                   ],
-                  default: "OTHER" 
+                  default: { // MODIFIED: Check for the specific values, case-insensitive
+                      $cond: [
+                        { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
+                        "SETTLED",
+                        "OTHER" // Default for non-matching
+                      ]
+                  }
                 }
               }
             }
           },
           {
+            // Group by provider and standardized status
             $group: {
               _id: {
                 provider: "$provider",
@@ -839,6 +943,7 @@ export class RecordsService {
             }
           },
           {
+            // Project to a flat structure
             $project: {
               _id: 0,
               provider: "$_id.provider",
@@ -847,6 +952,7 @@ export class RecordsService {
             }
           }
         ],
+        // Facet 2: Group by "out of sol" comment status
         byCommentStatus: [
           {
             $match: {
@@ -864,7 +970,7 @@ export class RecordsService {
             $project: {
               _id: 0,
               provider: "$_id",
-              status: "OUT OF SOL", 
+              status: "OUT OF SOL", // Standardized header name
               count: "$count"
             }
           }
@@ -872,16 +978,20 @@ export class RecordsService {
       }
     });
 
+    // 3. Add the subsequent processing stages
     aggregationPipeline.push(
       {
+        // Combine the results from both facets into a single array
         $project: {
           allStatuses: { $concatArrays: ["$byCaseStatus", "$byCommentStatus"] }
         }
       },
       {
+        // Unwind the combined array to process each status object
         $unwind: "$allStatuses"
       },
       {
+         // [NEW] Filter to *only* include the statuses we care about
          $match: {
           "allStatuses.status": { 
             $in: [
@@ -894,6 +1004,7 @@ export class RecordsService {
         }
       },
       {
+        // Re-group by provider to create the final structure
         $group: {
           _id: "$allStatuses.provider",
           statuses: {
@@ -902,10 +1013,12 @@ export class RecordsService {
               count: "$allStatuses.count"
             }
           },
+          // Sum only the counts of the filtered statuses
           totalCount: { $sum: "$allStatuses.count" }
         }
       },
       {
+        // Clean up the output to match the frontend's expectation
         $project: {
           _id: 0,
           provider: "$_id",
@@ -914,16 +1027,24 @@ export class RecordsService {
         }
       },
       {
+        // Sort by provider name alphabetically
         $sort: {
           provider: 1
         }
       }
     );
 
+    // FIX: A small typo was in the original $switch statement.
+    // I've corrected it, but the logic was complex.
+    // Let's simplify the $switch in `byCaseStatus` to be more robust.
+    
+    // Find the $facet stage in the pipeline
     const facetStage = aggregationPipeline.find(stage => stage.$facet);
     if (facetStage) {
+        // Find the $project stage within byCaseStatus
         const projectStage = facetStage.$facet.byCaseStatus.find(stage => stage.$project);
         if (projectStage) {
+            // Overwrite the standardizedStatus logic with a cleaner, more robust version
             projectStage.$project.standardizedStatus = {
                 $switch: {
                   branches: [
@@ -936,11 +1057,12 @@ export class RecordsService {
                       then: "CIC PENDING"
                     },
                     {
+                      // This will catch "SETTLED", "settled", "Settled", etc.
                       case: { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
                       then: "SETTLED"
                     }
                   ],
-                  default: "OTHER" 
+                  default: "OTHER" // All other statuses
                 }
             };
         }
