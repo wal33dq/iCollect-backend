@@ -134,7 +134,14 @@ export class RecordsController {
     
     return this.recordsService.getScheduledEvents(userId, start, end);
   }
-
+  
+   // For Duplicate Files
+  @Get('duplicates')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async getDuplicates() {
+  return this.recordsService.findDuplicates();
+  }
   @Get(':id')
   async getRecord(@Param('id') id: string, @Request() req) {
     const record = await this.recordsService.findById(id);

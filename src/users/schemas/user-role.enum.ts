@@ -6,4 +6,5 @@ export enum UserRole {
   PAYMENT_REDEEMER = 'Payment Redeemer',
   PAYMENT_POSTER = 'Payment Poster',
   HEARING_Representative = 'Hearing Representative',
+  PROVIDER = 'Provider',
 }
