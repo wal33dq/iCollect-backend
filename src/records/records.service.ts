@@ -466,6 +466,7 @@ export class RecordsService {
       status: string;
       scheduledDate?: Date;
       scheduledTime?: string;
+      offerAmount?: number; // <--- TYPE DEFINITION
     },
     user: any
   ): Promise<Record> {
@@ -495,6 +496,7 @@ export class RecordsService {
       author: new Types.ObjectId(user.userId),
       scheduledDate: commentData.scheduledDate,
       scheduledTime: commentData.scheduledTime,
+      offerAmount: commentData.offerAmount,
       isCompleted: false,
       completedAt: null,
       createdAt: new Date(),
@@ -597,6 +599,7 @@ export class RecordsService {
           status: latestEventComment.status,
           scheduledDate: latestEventComment.scheduledDate,
           scheduledTime: latestEventComment.scheduledTime,
+          offerAmount: latestEventComment.offerAmount,
           author: latestEventComment.author,
           assignedCollector: record.assignedCollector,
           createdAt: latestEventComment.createdAt,

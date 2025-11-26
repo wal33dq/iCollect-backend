@@ -33,8 +33,12 @@ class Comment {
   scheduledDate: Date; // When the follow-up is scheduled
 
   @Prop()
-  scheduledTime: string; // Time slot (15-min intervals)
+  scheduledTime: string;
 
+  // --- NEW FIELD ---
+  @Prop()
+  offerAmount: number; 
+  // ----------------
   @Prop({ default: false })
   isCompleted: boolean;
 

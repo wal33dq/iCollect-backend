@@ -265,6 +265,7 @@ export class RecordsController {
       status: string;
       scheduledDate?: string; 
       scheduledTime?: string;
+      offerAmount?: number; // <--- NEW FIELD ACCEPTED HERE
     },
     @Request() req,
   ) {
