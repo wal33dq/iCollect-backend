@@ -222,14 +222,14 @@ export class Record {
 
  @Prop({
     type: String,
-    enum: ['YES', 'NO'],
+    enum: ['yes', 'no'],
     default: null,
  })
  status4903_8?: string;
 
  @Prop({
     type: String,
-    enum: ['YES', 'NO'],
+    enum: ['yes', 'no'],
     default: null,
  })
  pmrStatus?: string;

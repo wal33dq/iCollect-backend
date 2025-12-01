@@ -205,18 +205,18 @@ export class CreateRecordDto {
 
  @ApiProperty({
   description: '4903.8 STATUS',
-  enum: ['YES', 'NO'],
+  enum: ['yes', 'no'],
  })
  @IsOptional()
- @IsEnum(['YES', 'NO'])
+ @IsEnum(['yes', 'no'])
  status4903_8?: string;
  
  @ApiProperty({
   description: 'PMR STATUS',
-  enum: ['YES', 'NO'],
+  enum: ['yes', 'no'],
  })
  @IsOptional()
- @IsEnum(['YES', 'NO'])
+ @IsEnum(['yes', 'no'])
  pmrStatus?: string;
  
  @ApiProperty({

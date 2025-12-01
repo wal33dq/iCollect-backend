@@ -37,9 +37,8 @@ export class RecordsService {
     });
     return createdRecord.save();
   }
-
-  async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; errors: string[] }> {
-    let workbook;
+     async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; failedRecords: any[] }> {
+     let workbook;
     try {
       workbook = XLSX.read(buffer, { type: 'buffer' });
     } catch (err) {
@@ -61,7 +60,8 @@ export class RecordsService {
     });
 
     if (data.length === 0) {
-      return { count: 0, errors: ['No data found in the sheet.'] };
+      //return { count: 0, errors: ['No data found in the sheet.'] };
+         return { count: 0, failedRecords: [] };
     }
     
     const parseCurrency = (value: any): number | null => {
@@ -78,8 +78,13 @@ export class RecordsService {
     const normalizeCaseStatus = (value: any): string => {
         if (typeof value !== 'string' || !value) return ''; 
         const allowed = ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED', 'ADR CASE - SETTED AND PAID ADR', 'ORDER OF DISMISAAL OF CASE', ''];
-        if (allowed.includes(value.trim())) return value.trim();
-        return value; 
+        // if (allowed.includes(value.trim())) return value.trim();
+        // return value; 
+         // Check if value exists in allowed list (case-insensitive check)
+
+        const match = allowed.find(a => a.toLowerCase() === value.trim().toLowerCase());
+
+        return match || value; // Return matched formatted string or original if not found
     };
 
 
@@ -175,18 +180,23 @@ export class RecordsService {
     }
 
     let count = 0;
-    const errors: string[] = [];
-
+    //const errors: string[] = [];
+     const failedRecords: any[] = []; // Changed from errors string array to full object array
     for (const rec of records) {
       try {
         await this.create(rec);
         count++;
       } catch (err) {
-        errors.push(`Error creating record for ${rec.ptName}: ${err.message}`);
+        // --- MODIFIED: Return the FULL record + errorReason so frontend can download Excel ---
+        failedRecords.push({
+           ...rec,
+           errorReason: err.message
+         });
       }
     }
 
-    return { count, errors };
+   // return { count, errors };
+   return { count, failedRecords };
   }
 
   /**
