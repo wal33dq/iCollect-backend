@@ -20,7 +20,7 @@ export class RecordsService {
       }
       
       payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
-     // ADDED: Set assignedAt when creating with a collector
+      // ADDED: Set assignedAt when creating with a collector
       payload.assignedAt = new Date();
 
     }
@@ -37,8 +37,9 @@ export class RecordsService {
     });
     return createdRecord.save();
   }
-     async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; failedRecords: any[] }> {
-     let workbook;
+
+  async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; failedRecords: any[] }> {
+    let workbook;
     try {
       workbook = XLSX.read(buffer, { type: 'buffer' });
     } catch (err) {
@@ -61,7 +62,7 @@ export class RecordsService {
 
     if (data.length === 0) {
       //return { count: 0, errors: ['No data found in the sheet.'] };
-         return { count: 0, failedRecords: [] };
+      return { count: 0, failedRecords: [] };
     }
     
     const parseCurrency = (value: any): number | null => {
@@ -195,8 +196,8 @@ export class RecordsService {
       }
     }
 
-   // return { count, errors };
-   return { count, failedRecords };
+    // return { count, errors };
+    return { count, failedRecords };
   }
 
   /**
@@ -560,7 +561,8 @@ export class RecordsService {
         .exec();
   }
 
-  async getScheduledEvents(userId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+  // --- UPDATED METHOD: Accepts full USER object to filter by Provider Name ---
+  async getScheduledEvents(user: any, startDate?: Date, endDate?: Date): Promise<any[]> {
     const commentConditions: any = {
       scheduledDate: { $exists: true, $ne: null },
       isCompleted: false,
@@ -578,8 +580,20 @@ export class RecordsService {
       comments: { $elemMatch: commentConditions },
     };
 
-    if (userId && Types.ObjectId.isValid(userId)) {
-      query.assignedCollector = new Types.ObjectId(userId);
+    // 1. Collector Logic (Adapted to check user object)
+    if (user.role === UserRole.COLLECTOR && user.userId && Types.ObjectId.isValid(user.userId)) {
+      query.assignedCollector = new Types.ObjectId(user.userId);
+    }
+
+    // 2. NEW: Provider Logic (Filters by Provider Name, similar to findAll)
+    if (user.role === UserRole.PROVIDER) {
+       const providerName = (user.fullName || user.username || '').trim();
+       
+       if (providerName) {
+           const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+           // Strict regex to match the provider name exactly (case insensitive, ignoring surrounding spaces)
+           query.provider = { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, 'i') };
+       }
     }
 
     const records = await this.recordModel

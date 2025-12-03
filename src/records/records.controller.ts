@@ -120,6 +120,7 @@ export class RecordsController {
     return this.recordsService.getOverdueEvents();
   }
 
+  // --- UPDATED: Pass full user object to allow Provider filtering ---
   @Get('scheduled-events')
   async getScheduledEvents(
     @Request() req,
@@ -127,12 +128,11 @@ export class RecordsController {
     @Query('endDate') endDate?: string,
   ) {
     const user = req.user;
-    const userId = user.role === UserRole.COLLECTOR ? user.userId : undefined;
-    
+    // We pass the whole 'user' object now, so the service can check roles and names
     const start = startDate ? new Date(startDate) : undefined;
     const end = endDate ? new Date(endDate) : undefined;
     
-    return this.recordsService.getScheduledEvents(userId, start, end);
+    return this.recordsService.getScheduledEvents(user, start, end);
   }
   
    // For Duplicate Files
@@ -142,6 +142,7 @@ export class RecordsController {
   async getDuplicates() {
   return this.recordsService.findDuplicates();
   }
+
   @Get(':id')
   async getRecord(@Param('id') id: string, @Request() req) {
     const record = await this.recordsService.findById(id);
@@ -166,10 +167,10 @@ export class RecordsController {
         }
     }
 
-    // [STRICT + ROBUST] Security check: Providers
+    // [UPDATED] Security check: Providers (Regex for Case-Insensitive + Whitespace Tolerance)
     if (user.role === UserRole.PROVIDER) {
-        const userIdentifier = (user.fullName || user.username || '').trim().toLowerCase();
-        const recordProvider = record.provider ? record.provider.trim().toLowerCase() : '';
+        const userIdentifier = (user.fullName || user.username || '').trim();
+        const recordProvider = record.provider ? record.provider.trim() : '';
 
         // If the user has no name in the token/profile, deny access immediately
         if (!userIdentifier) {
@@ -177,8 +178,11 @@ export class RecordsController {
             throw new ForbiddenException('Your account profile is incomplete. Access Denied.');
         }
 
-        // Strict comparison
-        if (recordProvider !== userIdentifier) {
+        // Use Regex to match the provider name (handles "NAME", "name", " Name ")
+        const escapedName = userIdentifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const providerRegex = new RegExp(`^\\s*${escapedName}\\s*$`, 'i');
+
+        if (!providerRegex.test(recordProvider)) {
              throw new ForbiddenException(`Access Denied: This record belongs to ${record.provider}.`);
         }
     }
