@@ -81,7 +81,7 @@ export class RecordsService {
         const allowed = ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED', 'ADR CASE - SETTED AND PAID ADR', 'ORDER OF DISMISAAL OF CASE', ''];
         // if (allowed.includes(value.trim())) return value.trim();
         // return value; 
-         // Check if value exists in allowed list (case-insensitive check)
+          // Check if value exists in allowed list (case-insensitive check)
 
         const match = allowed.find(a => a.toLowerCase() === value.trim().toLowerCase());
 
@@ -866,28 +866,37 @@ export class RecordsService {
     const records = await this.recordModel
       .find(query)
       .populate('assignedCollector', 'username')
+      .populate('comments.author', 'username') // <--- ADDED: Populate comment authors
       .exec();
 
-    const events = records.map(record => ({
-      recordId: record._id,
-      provider: record.provider,
-      ptName: record.ptName,
-      adjNumber: record.adjNumber,
-      caseStatus: record.caseStatus,
-      hearingStatus: record.hearingStatus,
-      hearingDate: record.hearingDate,
-      hearingTime: record.hearingTime,
-      judgeName: record.judgeName,
-      courtRoomlink: record.courtRoomlink,
-      judgePhone: record.judgePhone,
-      AccesCode: record.AccesCode,
-      boardLocation: record.boardLocation,
-      pmrStatus: record.pmrStatus,
-      dorFiledBy: record.dorFiledBy,
-      status4903_8: record.status4903_8,
-      judgeOrderStatus: record.judgeOrderStatus,
-      assignedCollector: record.assignedCollector,
-    }));
+    const events = records.map(record => {
+        // --- ADDED: Logic to find the latest comment author ---
+        const latestComment = record.comments && record.comments.length > 0
+            ? record.comments.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+            : null;
+
+        return {
+            recordId: record._id,
+            provider: record.provider,
+            ptName: record.ptName,
+            adjNumber: record.adjNumber,
+            caseStatus: record.caseStatus,
+            hearingStatus: record.hearingStatus,
+            hearingDate: record.hearingDate,
+            hearingTime: record.hearingTime,
+            judgeName: record.judgeName,
+            courtRoomlink: record.courtRoomlink,
+            judgePhone: record.judgePhone,
+            AccesCode: record.AccesCode,
+            boardLocation: record.boardLocation,
+            pmrStatus: record.pmrStatus,
+            dorFiledBy: record.dorFiledBy,
+            status4903_8: record.status4903_8,
+            judgeOrderStatus: record.judgeOrderStatus,
+            assignedCollector: record.assignedCollector,
+            author: latestComment ? latestComment.author : null, // <--- ADDED: Return author of latest comment
+        };
+    });
     
     events.sort((a, b) => new Date(a.hearingDate).getTime() - new Date(b.hearingDate).getTime());
     return events;
