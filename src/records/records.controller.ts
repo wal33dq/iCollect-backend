@@ -32,6 +32,13 @@ export class RecordsController {
   private readonly logger = new Logger(RecordsController.name);
 
   constructor(private readonly recordsService: RecordsService) {}
+  // --- NEW ENDPOINT ADDED HERE ---
+  @Get('unique-providers')
+  async getUniqueProviders() {
+    const providers = await this.recordsService.getUniqueProviders();
+    return { data: providers };
+  }
+  // -------------------------------
 
   @Post()
   @UseGuards(RolesGuard)

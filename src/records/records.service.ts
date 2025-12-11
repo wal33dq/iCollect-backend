@@ -10,6 +10,15 @@ import { stat } from 'fs';
 @Injectable()
 export class RecordsService {
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
+   // --- NEW METHOD ADDED FOR DROPDOWN ---
+  async getUniqueProviders(): Promise<string[]> {
+    // Get distinct values for 'provider', filtering out empty or null values
+    const providers = await this.recordModel.distinct('provider', {
+        provider: { $exists: true, $ne: '' }
+    }).exec();
+    return providers.sort();
+  }
+  // --------------------------------------
 
   async create(createRecordDto: CreateRecordDto): Promise<Record> {
     const payload: any = { ...createRecordDto };
