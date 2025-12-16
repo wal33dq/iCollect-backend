@@ -32,6 +32,16 @@ export class RecordsController {
   private readonly logger = new Logger(RecordsController.name);
 
   constructor(private readonly recordsService: RecordsService) {}
+
+  // --- RESTORED:Auto assign REF ID ---
+  @Get('fix-ids')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async fixReferenceIds() {
+    return this.recordsService.manualMigration();
+  }
+  // --------------------------------------------------------------------------
+
   // --- NEW ENDPOINT ADDED HERE ---
   @Get('unique-providers')
   async getUniqueProviders() {

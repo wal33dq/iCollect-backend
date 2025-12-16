@@ -1,6 +1,6 @@
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, Types, Document } from 'mongoose';
 import { Record, RecordDocument } from './schemas/record.schema'; 
 import { CreateRecordDto } from './dto/create-record.dto';
 import * as XLSX from 'xlsx';
@@ -8,9 +8,99 @@ import { UserRole } from '../users/schemas/user-role.enum';
 import { stat } from 'fs';
 
 @Injectable()
-export class RecordsService {
+export class RecordsService implements OnModuleInit {
+  private readonly logger = new Logger(RecordsService.name);
+
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
-   // --- NEW METHOD ADDED FOR DROPDOWN ---
+
+  // ==========================================
+  // NEW: Reference ID & Migration Logic
+  // ==========================================
+
+  // 1. Helper to get next sequence number safely
+  private async getNextSequenceNumber(): Promise<number> {
+    const lastRecord = await this.recordModel
+      .findOne({ referenceId: { $regex: /^REF-/ } }) 
+      .sort({ referenceId: -1 })
+      .collation({ locale: "en_US", numericOrdering: true }) 
+      .select('referenceId')
+      .exec();
+
+    if (!lastRecord || !lastRecord.referenceId) {
+        return 1; 
+    }
+
+    const parts = lastRecord.referenceId.split('-');
+    if (parts.length < 2) return 1;
+
+    const lastNum = parseInt(parts[1], 10);
+    return isNaN(lastNum) ? 1 : lastNum + 1;
+  }
+
+  // 2. Helper to format ID
+  private formatReferenceId(num: number): string {
+    return `REF-${num.toString().padStart(8, '0')}`;
+  }
+
+  // 3. Auto-trigger on startup (Background)
+  async onModuleInit() {
+    this.logger.log('Checking for records missing Reference IDs...');
+    this.performIdMigration(true).catch(err => this.logger.warn('Background migration warning: ' + err.message)); 
+  }
+
+  // 4. Manual trigger
+  async manualMigration() {
+    return await this.performIdMigration(false); 
+  }
+
+  // 5. Bulk Migration Logic (Fallback)
+  private async performIdMigration(silent: boolean) {
+    try {
+        const query = { 
+            $or: [
+                { referenceId: { $exists: false } }, 
+                { referenceId: null },
+                { referenceId: "" },
+                { referenceId: "Generating..." }
+            ] 
+        };
+        
+        const recordsToFix = await this.recordModel.find(query).select('_id').limit(1000).exec(); // Limit to avoid memory issues
+        const totalFound = recordsToFix.length;
+
+        if (totalFound > 0) {
+            if (!silent) this.logger.log(`Found ${totalFound} records needing IDs. Starting Batch Fix...`);
+            
+            let currentSeq = await this.getNextSequenceNumber();
+            const bulkOps = [];
+
+            for (const record of recordsToFix) {
+                const newId = this.formatReferenceId(currentSeq);
+                bulkOps.push({
+                    updateOne: {
+                        filter: { _id: record._id },
+                        update: { $set: { referenceId: newId } }
+                    }
+                });
+                currentSeq++;
+            }
+
+            if (bulkOps.length > 0) {
+                // *** FIX: Use .collection to bypass 'immutable' schema rule ***
+                await this.recordModel.collection.bulkWrite(bulkOps, { ordered: false });
+                return { message: `Successfully assigned IDs to ${totalFound} records.`, count: totalFound };
+            }
+        }
+
+        return { message: "No records found needing IDs.", count: 0 };
+    } catch (error) {
+        if (!silent) throw new BadRequestException('Migration failed: ' + error.message);
+        this.logger.error('Migration failed', error);
+    }
+  }
+  // ==========================================
+
+  // --- NEW METHOD ADDED FOR DROPDOWN ---
   async getUniqueProviders(): Promise<string[]> {
     // Get distinct values for 'provider', filtering out empty or null values
     const providers = await this.recordModel.distinct('provider', {
@@ -39,6 +129,10 @@ export class RecordsService {
     } else if (payload.bill !== undefined && payload.bill !== null) {
       payload.outstanding = payload.bill;
     }
+    // --- Generate ID for single create ---
+    const nextSeq = await this.getNextSequenceNumber();
+    payload.referenceId = this.formatReferenceId(nextSeq);
+    // ------------------------------------------
 
     const createdRecord = new this.recordModel({
       ...payload,
@@ -97,9 +191,11 @@ export class RecordsService {
         return match || value; // Return matched formatted string or original if not found
     };
 
-
     const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
 
+    // --- Get starting sequence for batch ---
+    let currentSeq = await this.getNextSequenceNumber();
+    // --------------------------------------------
     const records: CreateRecordDto[] = [];
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
@@ -185,6 +281,10 @@ export class RecordsService {
           // ADDED: Set assignedAt when uploading with assignment
           record.assignedAt = new Date();
         }
+        // --- Assign ID during processing loop ---
+        record.referenceId = this.formatReferenceId(currentSeq);
+        currentSeq++;
+        // ---------------------------------------------
         records.push(record);
       }
     }
@@ -321,6 +421,7 @@ export class RecordsService {
         { lienStatus: searchRegex },
         { caseStatus: searchRegex },
         { 'comments.status': searchRegex }, 
+        { referenceId: searchRegex } 
       ];
       
       if (baseQuery.$or) {
@@ -351,6 +452,39 @@ export class RecordsService {
         .limit(limit)
         .exec();
 
+    // ===============================================
+    // NEW: PAGINATION SELF-HEALING (Batch Fix)
+    // ===============================================
+    const recordsMissingIds = data.filter(r => !r.referenceId || r.referenceId === 'Generating...');
+
+    if (recordsMissingIds.length > 0) {
+        this.logger.log(`Fixing ${recordsMissingIds.length} records missing IDs in current page view...`);
+        
+        let currentSeq = await this.getNextSequenceNumber();
+        const bulkOps = [];
+
+        for (const record of recordsMissingIds) {
+            const newId = this.formatReferenceId(currentSeq);
+            
+            // 1. Update in DB using .collection to BYPASS immutable check
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: record._id },
+                    update: { $set: { referenceId: newId } }
+                }
+            });
+
+            // 2. Update in Memory (so user sees it immediately)
+            record.referenceId = newId;
+            currentSeq++;
+        }
+
+        if (bulkOps.length > 0) {
+            // *** FIX: Use .collection to ensure the write happens ***
+            await this.recordModel.collection.bulkWrite(bulkOps, { ordered: false });
+        }
+    }
+    // ===============================================
     const processedData = data.map(doc => {
         const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; 
         
@@ -390,6 +524,22 @@ export class RecordsService {
     if (!record) {
       throw new BadRequestException('Record not found');
     }
+
+    // --- NEW: Single Record Self-Healing ---
+    if (!record.referenceId || record.referenceId.trim() === '' || record.referenceId === 'Generating...') {
+        try {
+            const nextSeq = await this.getNextSequenceNumber();
+            const newRefId = this.formatReferenceId(nextSeq);
+            
+            // *** FIX: Use .collection to bypass immutable check ***
+            await this.recordModel.collection.updateOne({ _id: record._id }, { $set: { referenceId: newRefId } });
+            
+            record.referenceId = newRefId; 
+        } catch (err) {
+            this.logger.error(`Failed to lazy-fix ID for record ${id}`, err);
+        }
+    }
+    // ----------------------------------------
 
     return record;
   }
@@ -468,6 +618,9 @@ export class RecordsService {
         }
     }
 
+    // --- Protect Reference ID from manual updates ---
+    delete updateData.referenceId;
+    // ----------------------------------------------------
 
     const updatedRecord = await this.recordModel
         .findByIdAndUpdate(id, updateData, { new: true })

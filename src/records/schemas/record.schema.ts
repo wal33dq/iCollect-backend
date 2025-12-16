@@ -54,6 +54,16 @@ const CommentSchema = SchemaFactory.createForClass(Comment);
 export class Record {
   _id: Types.ObjectId;
   
+  // --- NEW: Reference ID Field (ADDED) ---
+  @Prop({ 
+    unique: true, 
+    index: true,
+    sparse: true, // Allows older records to temporarily exist without ID during migration
+    immutable: true 
+  })
+  referenceId: string;
+  // ---------------------------------------
+
   // --- NON-MODIFIABLE FIELDS/Patient Information ---
 
   @Prop({ required: true, index: true, immutable: true })
