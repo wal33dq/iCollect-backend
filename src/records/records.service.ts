@@ -96,7 +96,17 @@ export class RecordsService {
 
         return match || value; // Return matched formatted string or original if not found
     };
+    const normalizelienStatus = (value: any): string => {
+         if (typeof value !== 'string' || !value) return ''; 
+        const allowed = ['Not Filed', 'Out of SOL', 'File', 'Settled', ''];
+        // if (allowed.includes(value.trim())) return value.trim();
+        // return value; 
+          // Check if value exists in allowed list (case-insensitive check)
 
+        const match = allowed.find(a => a.toLowerCase() === value.trim().toLowerCase());
+
+        return match || value; // Return matched formatted string or original if not found
+    }
 
     const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
 
@@ -139,7 +149,7 @@ export class RecordsService {
         else if (header === 'judgephone') record.judgePhone = value;
         else if (header === 'accescode') record.AccesCode = value;
         else if (header === 'boardlocation') record.boardLocation = value;
-        else if (header === 'lienstatus') record.lienStatus = value;
+        else if (header === 'lienstatus') record.lienStatus = normalizelienStatus(value);
         else if (header === 'casestatus') record.caseStatus = normalizeCaseStatus(value); 
         else if (header === 'casedate') record.caseDate = value; 
         else if (header === 'cramount') record.crAmount = parseCurrency(value); 
