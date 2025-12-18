@@ -10,62 +10,36 @@ import { stat } from 'fs';
 @Injectable()
 export class RecordsService implements OnModuleInit {
   private readonly logger = new Logger(RecordsService.name);
-  private readonly BATCH_SIZE = 1000000; // 1 Million records per letter (A, B, C...)
 
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
 
   // ==========================================
-  // NEW: Reference ID & Migration Logic (ALPHABETICAL A-Z)
+  // NEW: Reference ID & Migration Logic
   // ==========================================
 
-  // 1. Helper to get the next absolute sequence integer
+  // 1. Helper to get next sequence number safely
   private async getNextSequenceNumber(): Promise<number> {
-    // We sort by referenceId descending.
-    // Because we use Fixed-Length Padding (e.g., A-000001), string sort works correctly.
-    // "B-000001" comes after "A-999999".
     const lastRecord = await this.recordModel
-      .findOne({ referenceId: { $regex: /^[A-Z]-[0-9]+$/ } }) 
+      .findOne({ referenceId: { $regex: /^REF-/ } }) 
       .sort({ referenceId: -1 })
+      .collation({ locale: "en_US", numericOrdering: true }) 
       .select('referenceId')
       .exec();
 
     if (!lastRecord || !lastRecord.referenceId) {
-        return 1; // Start at A-000001
+        return 1; 
     }
 
-    // Parse ID: e.g., "B-000050"
-    const parts = lastRecord.referenceId.split('-'); // ["B", "000050"]
+    const parts = lastRecord.referenceId.split('-');
     if (parts.length < 2) return 1;
 
-    const letter = parts[0]; // "B"
-    const numberPart = parseInt(parts[1], 10); // 50
-
-    // Convert Letter to Index (A=0, B=1, C=2...)
-    // charCodeAt(0) for 'A' is 65.
-    const letterIndex = letter.charCodeAt(0) - 65;
-
-    // Calculate absolute sequence: (1 * 1,000,000) + 50 = 1,000,050
-    const currentAbsoluteSeq = (letterIndex * this.BATCH_SIZE) + numberPart;
-
-    return currentAbsoluteSeq + 1;
+    const lastNum = parseInt(parts[1], 10);
+    return isNaN(lastNum) ? 1 : lastNum + 1;
   }
 
-  // 2. Helper to format ID from absolute integer
-  private formatReferenceId(seq: number): string {
-    // Example: seq = 1,000,050
-    // letterIndex = floor(1000050 / 1000000) = 1
-    const letterIndex = Math.floor(seq / this.BATCH_SIZE);
-    
-    // remainder = 1000050 % 1000000 = 50
-    const remainder = seq % this.BATCH_SIZE;
-
-    // Convert index back to Char (65 + 1 = 66 -> 'B')
-    // Logic handles A-Z. If you go past Z, it will use ASCII symbols [, \, etc. 
-    // but 26 million records is usually enough.
-    const letter = String.fromCharCode(65 + letterIndex);
-
-    // Format: B-000050 (Padded to 6 digits for sorting safety)
-    return `${letter}-${remainder.toString().padStart(6, '0')}`;
+  // 2. Helper to format ID
+  private formatReferenceId(num: number): string {
+    return `REF-${num.toString().padStart(6, '0')}`;
   }
 
   // 3. Auto-trigger on startup (Background)
@@ -91,7 +65,14 @@ export class RecordsService implements OnModuleInit {
             ] 
         };
         
-        const recordsToFix = await this.recordModel.find(query).select('_id').limit(1000).exec(); 
+        // --- UPDATED: Sort by _id (Ascending) to process Oldest records first ---
+        const recordsToFix = await this.recordModel
+            .find(query)
+            .sort({ _id: 1 }) // 1 = Oldest first, -1 = Newest first
+            .select('_id')
+            .limit(1000)
+            .exec(); 
+        
         const totalFound = recordsToFix.length;
 
         if (totalFound > 0) {
@@ -1229,7 +1210,7 @@ export class RecordsService implements OnModuleInit {
         $unwind: "$allStatuses"
       },
       {
-          $match: {
+         $match: {
           "allStatuses.status": { 
             $in: [
               "C & R (GRANTED)", 
