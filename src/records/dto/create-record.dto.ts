@@ -170,9 +170,12 @@ export class CreateRecordDto {
   @IsString()
   boardLocation?: string;
 
-  @ApiProperty({ description: 'Lien status' })
+  @ApiProperty({
+    description: 'Lien status',
+    enum: ['Not Filed', 'Out of SOL', 'File', 'Settled', '']
+   })
   @IsOptional()
-  @IsString()
+  @IsEnum(['Not Filed', 'Out of SOL', 'File', 'Settled', ''])
   lienStatus?: string;
 
   @ApiProperty({ 

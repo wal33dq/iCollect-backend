@@ -205,9 +205,14 @@ export class Record {
   @Prop()
   boardLocation: string;
   
-  @Prop()
+  @Prop({
+    index: true,
+    type: String,
+    enum: ['Not Filed', 'Out of SOL', 'File', 'Settled', ''],
+    required: false
+  })
   lienStatus: string;
-  
+
   @Prop({ 
     index: true,
     type: String,
