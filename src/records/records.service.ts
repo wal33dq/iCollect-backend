@@ -8,13 +8,13 @@ import { UserRole } from '../users/schemas/user-role.enum';
 import { stat } from 'fs';
 
 @Injectable()
-export class RecordsService implements OnModuleInit {
+export class RecordsService {
   private readonly logger = new Logger(RecordsService.name);
 
   constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
 
   // ==========================================
-  // NEW: Reference ID & Migration Logic
+  // NEW: Reference ID Logic (Helpers Only)
   // ==========================================
 
   // 1. Helper to get next sequence number safely
@@ -39,72 +39,9 @@ export class RecordsService implements OnModuleInit {
 
   // 2. Helper to format ID
   private formatReferenceId(num: number): string {
-    return `REF-${num.toString().padStart(7, '0')}`;
+    return `REF-${num.toString().padStart(6, '0')}`;
   }
 
-  // 3. Auto-trigger on startup (Background)
-  async onModuleInit() {
-    this.logger.log('Checking for records missing Reference IDs...');
-    this.performIdMigration(true).catch(err => this.logger.warn('Background migration warning: ' + err.message)); 
-  }
-
-  // 4. Manual trigger
-  async manualMigration() {
-    return await this.performIdMigration(false); 
-  }
-
-  // 5. Bulk Migration Logic (Fallback)
-  private async performIdMigration(silent: boolean) {
-    try {
-        const query = { 
-            $or: [
-                { referenceId: { $exists: false } }, 
-                { referenceId: null },
-                { referenceId: "" },
-                { referenceId: "Generating..." }
-            ] 
-        };
-        
-        // --- UPDATED: Sort by _id (Ascending) to process Oldest records first ---
-        const recordsToFix = await this.recordModel
-            .find(query)
-            .sort({ _id: 1 }) // 1 = Oldest first, -1 = Newest first
-            .select('_id')
-            .limit(1000)
-            .exec(); 
-        
-        const totalFound = recordsToFix.length;
-
-        if (totalFound > 0) {
-            if (!silent) this.logger.log(`Found ${totalFound} records needing IDs. Starting Batch Fix...`);
-            
-            let currentSeq = await this.getNextSequenceNumber();
-            const bulkOps = [];
-
-            for (const record of recordsToFix) {
-                const newId = this.formatReferenceId(currentSeq);
-                bulkOps.push({
-                    updateOne: {
-                        filter: { _id: record._id },
-                        update: { $set: { referenceId: newId } }
-                    }
-                });
-                currentSeq++;
-            }
-
-            if (bulkOps.length > 0) {
-                // *** FIX: Use .collection to bypass 'immutable' schema rule ***
-                await this.recordModel.collection.bulkWrite(bulkOps, { ordered: false });
-                return { message: `Successfully assigned IDs to ${totalFound} records.`, count: totalFound };
-            }
-        }
-
-        return { message: "No records found needing IDs.", count: 0 };
-    } catch (error) {
-        if (!silent) throw new BadRequestException('Migration failed: ' + error.message);
-        this.logger.error('Migration failed', error);
-    }
-  }
   // ==========================================
 
   // --- NEW METHOD ADDED FOR DROPDOWN ---
@@ -454,44 +391,11 @@ export class RecordsService implements OnModuleInit {
         .find(baseQuery)
         .populate('assignedCollector', 'username')
         .populate('comments.author', 'username')
-        .sort({ createdAt: 1 }) 
+        .sort({ createdAt: -1 }) 
         .skip(skip)
         .limit(limit)
         .exec();
 
-    // ===============================================
-    // NEW: PAGINATION SELF-HEALING (Batch Fix)
-    // ===============================================
-    const recordsMissingIds = data.filter(r => !r.referenceId || r.referenceId === 'Generating...');
-
-    if (recordsMissingIds.length > 0) {
-        this.logger.log(`Fixing ${recordsMissingIds.length} records missing IDs in current page view...`);
-        
-        let currentSeq = await this.getNextSequenceNumber();
-        const bulkOps = [];
-
-        for (const record of recordsMissingIds) {
-            const newId = this.formatReferenceId(currentSeq);
-            
-            // 1. Update in DB using .collection to BYPASS immutable check
-            bulkOps.push({
-                updateOne: {
-                    filter: { _id: record._id },
-                    update: { $set: { referenceId: newId } }
-                }
-            });
-
-            // 2. Update in Memory (so user sees it immediately)
-            record.referenceId = newId;
-            currentSeq++;
-        }
-
-        if (bulkOps.length > 0) {
-            // *** FIX: Use .collection to ensure the write happens ***
-            await this.recordModel.collection.bulkWrite(bulkOps, { ordered: false });
-        }
-    }
-    // ===============================================
     const processedData = data.map(doc => {
         const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; 
         
@@ -531,22 +435,6 @@ export class RecordsService implements OnModuleInit {
     if (!record) {
       throw new BadRequestException('Record not found');
     }
-
-    // --- NEW: Single Record Self-Healing ---
-    if (!record.referenceId || record.referenceId.trim() === '' || record.referenceId === 'Generating...') {
-        try {
-            const nextSeq = await this.getNextSequenceNumber();
-            const newRefId = this.formatReferenceId(nextSeq);
-            
-            // *** FIX: Use .collection to bypass immutable check ***
-            await this.recordModel.collection.updateOne({ _id: record._id }, { $set: { referenceId: newRefId } });
-            
-            record.referenceId = newRefId; 
-        } catch (err) {
-            this.logger.error(`Failed to lazy-fix ID for record ${id}`, err);
-        }
-    }
-    // ----------------------------------------
 
     return record;
   }
@@ -1210,7 +1098,7 @@ export class RecordsService implements OnModuleInit {
         $unwind: "$allStatuses"
       },
       {
-         $match: {
+          $match: {
           "allStatuses.status": { 
             $in: [
               "C & R (GRANTED)", 
@@ -1276,4 +1164,4 @@ export class RecordsService implements OnModuleInit {
 
     return this.recordModel.aggregate(aggregationPipeline);
   }
-} 
+}
