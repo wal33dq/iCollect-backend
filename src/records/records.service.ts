@@ -454,7 +454,7 @@ export class RecordsService implements OnModuleInit {
         .find(baseQuery)
         .populate('assignedCollector', 'username')
         .populate('comments.author', 'username')
-        .sort({ createdAt: -1 }) 
+        .sort({ createdAt: 1 }) 
         .skip(skip)
         .limit(limit)
         .exec();
@@ -1210,7 +1210,7 @@ export class RecordsService implements OnModuleInit {
         $unwind: "$allStatuses"
       },
       {
-         $match: {
+          $match: {
           "allStatuses.status": { 
             $in: [
               "C & R (GRANTED)", 
