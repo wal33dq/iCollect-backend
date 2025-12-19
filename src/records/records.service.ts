@@ -39,7 +39,7 @@ export class RecordsService implements OnModuleInit {
 
   // 2. Helper to format ID
   private formatReferenceId(num: number): string {
-    return `REF-${num.toString().padStart(6, '0')}`;
+    return `REF-${num.toString().padStart(7, '0')}`;
   }
 
   // 3. Auto-trigger on startup (Background)
@@ -1210,7 +1210,7 @@ export class RecordsService implements OnModuleInit {
         $unwind: "$allStatuses"
       },
       {
-          $match: {
+         $match: {
           "allStatuses.status": { 
             $in: [
               "C & R (GRANTED)", 
@@ -1276,4 +1276,4 @@ export class RecordsService implements OnModuleInit {
 
     return this.recordModel.aggregate(aggregationPipeline);
   }
-}
+} 
