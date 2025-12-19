@@ -39,7 +39,7 @@ export class RecordsService {
 
   // 2. Helper to format ID
   private formatReferenceId(num: number): string {
-    return `REF-${num.toString().padStart(6, '0')}`;
+    return `REF-${num.toString().padStart(7, '0')}`;
   }
 
   // ==========================================
