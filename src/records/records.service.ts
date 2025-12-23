@@ -499,6 +499,14 @@ export class RecordsService {
   async update(id: string, updateData: any, user: any): Promise<Record> {
     if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
 
+    // --- SECURITY FIX: Prevent non-admins from changing Provider ---
+    // If user is NOT an Admin/SuperAdmin, delete the provider field from the update payload.
+    // This allows them to save other fields without being blocked, while ensuring provider is unchanged.
+    if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+        delete updateData.provider;
+    }
+    // ---------------------------------------------------------------
+
     if (updateData.bill !== undefined || updateData.paid !== undefined) {
         const record = await this.recordModel.findById(id);
         if (!record) throw new BadRequestException('Record not found');

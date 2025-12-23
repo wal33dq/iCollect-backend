@@ -64,9 +64,9 @@ export class Record {
   referenceId: string;
   // ---------------------------------------
 
-  // --- NON-MODIFIABLE FIELDS/Patient Information ---
+  // ---MODIFIABLE FIELDS/Patient Information ---
 
-  @Prop({ required: true, index: true, immutable: true })
+  @Prop({ required: true, index: true})
   provider: string;
  
   @Prop()
@@ -75,7 +75,7 @@ export class Record {
   @Prop()
   taxId: string;
 
-  @Prop({ required: true, index: true, immutable: true })
+  @Prop({ required: true, index: true })
   ptName: string;
 
   @Prop()
@@ -93,7 +93,7 @@ export class Record {
   @Prop({ type: [MultiEntrySchema], default: [] })
   adjNumber: MultiEntry[];
 
-  // --- MODIFIABLE FIELDS (Billing & Insurance Information)---
+ 
 
   @Prop()
   bill: number;
