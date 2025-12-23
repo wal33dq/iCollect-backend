@@ -208,7 +208,7 @@ export class Record {
   @Prop({
     index: true,
     type: String,
-    enum: ['Not Filed', 'Out of SOL', 'File', 'Settled', ''],
+    enum: ['Not Filed', 'Out of SOL', 'Filed', 'Settled', ''],
     required: false
   })
   lienStatus: string;
