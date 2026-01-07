@@ -1,35 +1,96 @@
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
-import { Record, RecordDocument } from './schemas/record.schema'; 
-import { CreateRecordDto } from './dto/create-record.dto';
-import * as XLSX from 'xlsx';
-import { UserRole } from '../users/schemas/user-role.enum';
-import { stat } from 'fs';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  OnModuleInit,
+  Logger,
+} from "@nestjs/common";
+import { InjectModel } from "@nestjs/mongoose";
+import { Model, Types, Document } from "mongoose";
+import { Record, RecordDocument } from "./schemas/record.schema";
+import { CreateRecordDto } from "./dto/create-record.dto";
+import * as XLSX from "xlsx";
+import { UserRole } from "../users/schemas/user-role.enum";
+import { stat } from "fs";
 
 @Injectable()
 export class RecordsService {
-  constructor(@InjectModel(Record.name) private recordModel: Model<RecordDocument>) {}
+  private readonly logger = new Logger(RecordsService.name);
+
+  constructor(
+    @InjectModel(Record.name) private recordModel: Model<RecordDocument>
+  ) {}
+
+  // ==========================================
+  // NEW: Reference ID Logic (Helpers Only)
+  // ==========================================
+
+  // 1. Helper to get next sequence number safely
+  private async getNextSequenceNumber(): Promise<number> {
+    const lastRecord = await this.recordModel
+      .findOne({ referenceId: { $regex: /^REF-/ } })
+      .sort({ referenceId: -1 })
+      .collation({ locale: "en_US", numericOrdering: true })
+      .select("referenceId")
+      .exec();
+
+    if (!lastRecord || !lastRecord.referenceId) {
+      return 1;
+    }
+
+    const parts = lastRecord.referenceId.split("-");
+    if (parts.length < 2) return 1;
+
+    const lastNum = parseInt(parts[1], 10);
+    return isNaN(lastNum) ? 1 : lastNum + 1;
+  }
+
+  // 2. Helper to format ID
+  private formatReferenceId(num: number): string {
+    return `REF-${num.toString().padStart(7, "0")}`;
+  }
+
+  // ==========================================
+
+  // --- NEW METHOD ADDED FOR DROPDOWN ---
+  async getUniqueProviders(): Promise<string[]> {
+    // Get distinct values for 'provider', filtering out empty or null values
+    const providers = await this.recordModel
+      .distinct("provider", {
+        provider: { $exists: true, $ne: "" },
+      })
+      .exec();
+    return providers.sort();
+  }
+  // --------------------------------------
 
   async create(createRecordDto: CreateRecordDto): Promise<Record> {
     const payload: any = { ...createRecordDto };
-    
+
     if (payload.assignedCollector) {
       if (!Types.ObjectId.isValid(payload.assignedCollector)) {
-        throw new BadRequestException('Invalid collectorId format.');
+        throw new BadRequestException("Invalid collectorId format.");
       }
-      
-      payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
-     // ADDED: Set assignedAt when creating with a collector
-      payload.assignedAt = new Date();
 
+      payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
+      // ADDED: Set assignedAt when creating with a collector
+      payload.assignedAt = new Date();
     }
-    
-    if (payload.bill !== undefined && payload.paid !== undefined && payload.bill !== null && payload.paid !== null) {
+
+    if (
+      payload.bill !== undefined &&
+      payload.paid !== undefined &&
+      payload.bill !== null &&
+      payload.paid !== null
+    ) {
       payload.outstanding = payload.bill - payload.paid;
     } else if (payload.bill !== undefined && payload.bill !== null) {
       payload.outstanding = payload.bill;
     }
+    // --- Generate ID for single create ---
+    const nextSeq = await this.getNextSequenceNumber();
+    payload.referenceId = this.formatReferenceId(nextSeq);
+    // ------------------------------------------
 
     const createdRecord = new this.recordModel({
       ...payload,
@@ -38,129 +99,164 @@ export class RecordsService {
     return createdRecord.save();
   }
 
-  async processUpload(buffer: Buffer, collectorId?: string): Promise<{ count: number; errors: string[] }> {
+  async processUpload(
+    buffer: Buffer,
+    collectorId?: string
+  ): Promise<{ count: number; failedRecords: any[] }> {
     let workbook;
     try {
-      workbook = XLSX.read(buffer, { type: 'buffer' });
+      workbook = XLSX.read(buffer, { type: "buffer" });
     } catch (err) {
       try {
-        const str = buffer.toString('utf8');
-        workbook = XLSX.read(str, { type: 'string' });
+        const str = buffer.toString("utf8");
+        workbook = XLSX.read(str, { type: "string" });
       } catch (err2) {
-        throw new BadRequestException('Unsupported file format');
+        throw new BadRequestException("Unsupported file format");
       }
     }
 
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    
-    const data: any[][] = XLSX.utils.sheet_to_json(sheet, { 
-      header: 1, 
-      raw: false,    
-      defval: null   
+
+    const data: any[][] = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      raw: false,
+      defval: null,
     });
 
     if (data.length === 0) {
-      return { count: 0, errors: ['No data found in the sheet.'] };
+      //return { count: 0, errors: ['No data found in the sheet.'] };
+      return { count: 0, failedRecords: [] };
     }
-    
+
     const parseCurrency = (value: any): number | null => {
-      if (value === null || value === undefined || value === '') return null;
-      if (typeof value === 'number') return value; 
+      if (value === null || value === undefined || value === "") return null;
+      if (typeof value === "number") return value;
       let cleanStr = String(value);
-      const isNegativeInParens = cleanStr.startsWith('(') && cleanStr.endsWith(')');
-      cleanStr = cleanStr.replace(/[$,€£¥\s()]/g, '');
+      const isNegativeInParens =
+        cleanStr.startsWith("(") && cleanStr.endsWith(")");
+      cleanStr = cleanStr.replace(/[$,€£¥\s()]/g, "");
       const num = parseFloat(cleanStr);
-      if (isNaN(num)) return null; 
+      if (isNaN(num)) return null;
       return isNegativeInParens ? -num : num;
     };
 
     const normalizeCaseStatus = (value: any): string => {
-        if (typeof value !== 'string' || !value) return ''; 
-        const allowed = ['SETTLED', 'C & R (GRANTED)', 'CIC PENDING', 'A & S GRANTED', 'ADR CASE - SETTED AND PAID ADR', 'ORDER OF DISMISAAL OF CASE', ''];
-        if (allowed.includes(value.trim())) return value.trim();
-        return value; 
+      if (typeof value !== "string" || !value) return "";
+      const allowed = [
+        "SETTLED",
+        "C & R (GRANTED)",
+        "CIC PENDING",
+        "A & S GRANTED",
+        "ADR CASE - SETTED AND PAID ADR",
+        "ORDER OF DISMISAAL OF CASE",
+        "",
+      ];
+      // if (allowed.includes(value.trim())) return value.trim();
+      // return value;
+      // Check if value exists in allowed list (case-insensitive check)
+
+      const match = allowed.find(
+        (a) => a.toLowerCase() === value.trim().toLowerCase()
+      );
+
+      return match || value; // Return matched formatted string or original if not found
     };
 
+    const headers = data[0].map((h: string) =>
+      h ? h.trim().replace(/\s+/g, "") : ""
+    );
 
-    const headers = data[0].map((h: string) => (h ? h.trim().replace(/\s+/g, '') : ''));
-
+    // --- Get starting sequence for batch ---
+    let currentSeq = await this.getNextSequenceNumber();
+    // --------------------------------------------
     const records: CreateRecordDto[] = [];
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       if (row.length === 0) continue;
 
-      const record: any = { claimNo: [], adjNumber: [], doi: [], };
+      const record: any = { claimNo: [], adjNumber: [], doi: [] };
 
       for (let j = 0; j < headers.length; j++) {
         let value = row[j];
-        if (value === null) continue; 
+        if (value === null) continue;
 
         const header = headers[j].toLowerCase();
 
-        if (header === 'provider') record.provider = value;
-        else if (header === 'renderingfacility') record.renderingFacility = value;
-        else if (header === 'taxid') record.taxId = value;
-        else if (header === 'ptname') record.ptName = value;
-        else if (header === 'dob') record.dob = value; 
-        else if (header === 'ssn') record.ssn = value; 
-        else if (header === 'employer') record.employer = value;
-        else if (header === 'insurance') record.insurance = value;
-        else if (header === 'bill') record.bill = parseCurrency(value);
-        else if (header === 'paid') record.paid = parseCurrency(value);
-        else if (header === 'outstanding') record.outstanding = parseCurrency(value);
-        else if (header === 'fds') record.fds = value; 
-        else if (header === 'lds') record.lds = value; 
-        else if (header === 'ledger') record.ledger = value;
-        else if (header === 'hcf') record.hcf = value;
-        else if (header === 'invoice') record.invoice = value;
-        else if (header === 'signinsheet') record.signinSheet = value;
-        else if (header === 'soldate') record.solDate = value; 
-        else if (header === 'hearingstatus') record.hearingStatus = value;
-        else if (header === 'hearingdate') record.hearingDate = value; 
-        else if (header === 'hearingtime') record.hearingTime = value; 
-        else if (header === 'judgename') record.judgeName = value;
-        else if (header === 'courtroomlink') record.courtRoomlink = value;
-        else if (header === 'judgephone') record.judgePhone = value;
-        else if (header === 'accescode') record.AccesCode = value;
-        else if (header === 'boardlocation') record.boardLocation = value;
-        else if (header === 'lienstatus') record.lienStatus = value;
-        else if (header === 'casestatus') record.caseStatus = normalizeCaseStatus(value); 
-        else if (header === 'casedate') record.caseDate = value; 
-        else if (header === 'cramount') record.crAmount = parseCurrency(value); 
-        else if (header === 'dorfiledby') record.dorFiledBy = value;
-        else if (header === 'status4903_8') record.status4903_8 = value;
-        else if (header === 'pmrstatus') record.pmrStatus = value;
-        else if (header === 'judgeorderstatus') record.judgeOrderStatus = value;
-        else if (header === 'adjuster') record.adjuster = value;
-        else if (header === 'adjusterphone') record.adjusterPhone = value;
-        else if (header === 'adjusterfax') record.adjusterFax = value;
-        else if (header === 'adjusteremail') record.adjusterEmail = value;
-        else if (header === 'defenseattorney') record.defenseAttorney = value; 
-        else if (header === 'defenseattorneyphone') record.defenseAttorneyPhone = value; 
-        else if (header === 'defenseattorneyfax') record.defenseAttorneyFax = value; 
-        else if (header === 'defenseattorneyemail') record.defenseAttorneyEmail = value; 
-        else if (header.startsWith('claimno.')) {
-          const index = parseInt(header.split('.')[1]) - 1;
+        if (header === "provider") record.provider = value;
+        else if (header === "renderingfacility")
+          record.renderingFacility = value;
+        else if (header === "taxid") record.taxId = value;
+        else if (header === "ptname") record.ptName = value;
+        else if (header === "dob") record.dob = value;
+        else if (header === "ssn") record.ssn = value;
+        else if (header === "employer") record.employer = value;
+        else if (header === "insurance") record.insurance = value;
+        else if (header === "bill") record.bill = parseCurrency(value);
+        else if (header === "paid") record.paid = parseCurrency(value);
+        else if (header === "outstanding")
+          record.outstanding = parseCurrency(value);
+        else if (header === "fds") record.fds = value;
+        else if (header === "lds") record.lds = value;
+        else if (header === "ledger") record.ledger = value;
+        else if (header === "hcf") record.hcf = value;
+        else if (header === "invoice") record.invoice = value;
+        else if (header === "signinsheet") record.signinSheet = value;
+        else if (header === "soldate") record.solDate = value;
+        else if (header === "hearingstatus") record.hearingStatus = value;
+        else if (header === "hearingdate") record.hearingDate = value;
+        else if (header === "hearingtime") record.hearingTime = value;
+        else if (header === "judgename") record.judgeName = value;
+        else if (header === "courtroomlink") record.courtRoomlink = value;
+        else if (header === "judgephone") record.judgePhone = value;
+        else if (header === "accescode") record.AccesCode = value;
+        else if (header === "boardlocation") record.boardLocation = value;
+        else if (header === "lienstatus") record.lienStatus = value;
+        else if (header === "casestatus")
+          record.caseStatus = normalizeCaseStatus(value);
+        else if (header === "casedate") record.caseDate = value;
+        else if (header === "cramount") record.crAmount = parseCurrency(value);
+        else if (header === "dorfiledby") record.dorFiledBy = value;
+        else if (header === "status4903_8") record.status4903_8 = value;
+        else if (header === "pmrstatus") record.pmrStatus = value;
+        else if (header === "judgeorderstatus") record.judgeOrderStatus = value;
+        else if (header === "adjuster") record.adjuster = value;
+        else if (header === "adjusterphone") record.adjusterPhone = value;
+        else if (header === "adjusterfax") record.adjusterFax = value;
+        else if (header === "adjusteremail") record.adjusterEmail = value;
+        else if (header === "defenseattorney") record.defenseAttorney = value;
+        else if (header === "defenseattorneyphone")
+          record.defenseAttorneyPhone = value;
+        else if (header === "defenseattorneyfax")
+          record.defenseAttorneyFax = value;
+        else if (header === "defenseattorneyemail")
+          record.defenseAttorneyEmail = value;
+        else if (header.startsWith("claimno.")) {
+          const index = parseInt(header.split(".")[1]) - 1;
           if (value) record.claimNo[index] = { value };
-        } else if (header.startsWith('adjnumber.')) {
-          const index = parseInt(header.split('.')[1]) - 1;
+        } else if (header.startsWith("adjnumber.")) {
+          const index = parseInt(header.split(".")[1]) - 1;
           if (value) record.adjNumber[index] = { value };
-        } else if (header.startsWith('doi.')) {
-          const index = parseInt(header.split('.')[1]) - 1;
-          if (value) record.doi[index] = { value }; 
+        } else if (header.startsWith("doi.")) {
+          const index = parseInt(header.split(".")[1]) - 1;
+          if (value) record.doi[index] = { value };
         }
       }
 
-      record.claimNo = record.claimNo.filter(item => item !== undefined);
-      record.adjNumber = record.adjNumber.filter(item => item !== undefined);
-      record.doi = record.doi.filter(item => item !== undefined);
+      record.claimNo = record.claimNo.filter((item) => item !== undefined);
+      record.adjNumber = record.adjNumber.filter((item) => item !== undefined);
+      record.doi = record.doi.filter((item) => item !== undefined);
 
       if (record.outstanding === undefined || record.outstanding === null) {
-        if (record.bill !== undefined && record.paid !== undefined && record.bill !== null && record.paid !== null) {
-            record.outstanding = record.bill - record.paid;
+        if (
+          record.bill !== undefined &&
+          record.paid !== undefined &&
+          record.bill !== null &&
+          record.paid !== null
+        ) {
+          record.outstanding = record.bill - record.paid;
         } else if (record.bill !== undefined && record.bill !== null) {
-            record.outstanding = record.bill; 
+          record.outstanding = record.bill;
         }
       }
 
@@ -170,53 +266,62 @@ export class RecordsService {
           // ADDED: Set assignedAt when uploading with assignment
           record.assignedAt = new Date();
         }
+        // --- Assign ID during processing loop ---
+        record.referenceId = this.formatReferenceId(currentSeq);
+        currentSeq++;
+        // ---------------------------------------------
         records.push(record);
       }
     }
 
     let count = 0;
-    const errors: string[] = [];
-
+    //const errors: string[] = [];
+    const failedRecords: any[] = []; // Changed from errors string array to full object array
     for (const rec of records) {
       try {
         await this.create(rec);
         count++;
       } catch (err) {
-        errors.push(`Error creating record for ${rec.ptName}: ${err.message}`);
+        // --- MODIFIED: Return the FULL record + errorReason so frontend can download Excel ---
+        failedRecords.push({
+          ...rec,
+          errorReason: err.message,
+        });
       }
     }
 
-    return { count, errors };
+    // return { count, errors };
+    return { count, failedRecords };
   }
 
   /**
    * [NEW] Finds duplicate records based on Provider, PT Name, and Adj Number.
-  * Logic:
-  * 1. Unwinds adjNumber (to handle array).
-  * 2. Groups by Provider (lower), PtName (lower), and AdjNumber.
-  * 3. Filters groups with count > 1.
-  * 4. Returns the full list of records that are part of these duplicate groups.*/
+   * Logic:
+   * 1. Unwinds adjNumber (to handle array).
+   * 2. Groups by Provider (lower), PtName (lower), and AdjNumber.
+   * 3. Filters groups with count > 1.
+   * 4. Returns the full list of records that are part of these duplicate groups.*/
   async findDuplicates(): Promise<Record[]> {
-  const duplicates = await this.recordModel.aggregate([
-   // 1. Filter out records that don't have the required fields to avoid null grouping
+    const duplicates = await this.recordModel.aggregate([
+      // 1. Filter out records that don't have the required fields to avoid null grouping
       {
         $match: {
-          provider: { $exists: true, $ne: '' },
-          ptName: { $exists: true, $ne: '' },
-         'adjNumber.0': { $exists: true }, // Ensure at least one adjNumber exists
+          provider: { $exists: true, $ne: "" },
+          ptName: { $exists: true, $ne: "" },
+          "adjNumber.0": { $exists: true }, // Ensure at least one adjNumber exists
         },
       },
       // 2. Unwind adjNumber array so we can match individual values
-      { $unwind: '$adjNumber' },
+      { $unwind: "$adjNumber" },
       // 3. Group by the key criteria
       {
         $group: {
           _id: {
-            provider: { $toLower: '$provider' },
-            ptName: { $toLower: '$ptName' },
-            adjNumber: '$adjNumber.value',
+            provider: { $toLower: "$provider" },
+            ptName: { $toLower: "$ptName" },
+            adjNumber: "$adjNumber.value",
           },
-          uniqueIds: { $addToSet: '$_id' }, // Collect unique Record IDs in this group
+          uniqueIds: { $addToSet: "$_id" }, // Collect unique Record IDs in this group
           count: { $sum: 1 },
         },
       },
@@ -230,127 +335,643 @@ export class RecordsService {
     // 5. Extract all IDs from the duplicate groups
     // The 'duplicates' array contains objects with 'uniqueIds' arrays. We need to flatten this.
     const duplicateIds = duplicates.reduce((acc, curr) => {
-        return acc.concat(curr.uniqueIds);
+      return acc.concat(curr.uniqueIds);
     }, []);
     // 6. Fetch the full documents using standard Mongoose find to allow Population
     // We use distinct IDs in case a record was flagged as duplicate for multiple reasons
     if (duplicateIds.length === 0) {
-        return [];
+      return [];
     }
     return this.recordModel
       .find({ _id: { $in: duplicateIds } })
-      .populate('assignedCollector', 'username')
-      .populate('comments.author', 'username')
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
       .sort({ provider: 1, ptName: 1 }) // Sort to keep duplicates near each other visually
       .exec();
   }
+
+  /**
+
+
+   * Merge SELECTED duplicates into a primary record.
+
+
+   * - Preserves ALL comments (author + timestamps)
+
+
+   * - Tags merged comments with source record info
+
+
+   * - Auto-deletes duplicate records after merge
+
+
+   */
+
+  async mergeDuplicateGroup(primaryId: string, duplicateIds: string[]) {
+    if (!Types.ObjectId.isValid(primaryId)) {
+      throw new BadRequestException("Invalid primaryId.");
+    }
+
+    if (!Array.isArray(duplicateIds) || duplicateIds.length === 0) {
+      throw new BadRequestException("duplicateIds must be a non-empty array.");
+    }
+
+    const cleanDupIds = [...new Set(duplicateIds)].filter(
+      (id) => id !== primaryId
+    );
+
+    if (cleanDupIds.length === 0) {
+      throw new BadRequestException(
+        "Please select at least one duplicate record to merge."
+      );
+    }
+
+    for (const id of cleanDupIds) {
+      if (!Types.ObjectId.isValid(id)) {
+        throw new BadRequestException(`Invalid duplicateId: ${id}`);
+      }
+    }
+
+    const ids = [primaryId, ...cleanDupIds].map((id) => new Types.ObjectId(id));
+
+    // Lean read to keep this fast and avoid accidental timestamp changes.
+
+    const docs = await this.recordModel.find({ _id: { $in: ids } }).lean();
+
+    const primary = docs.find((d: any) => d._id.toString() === primaryId);
+
+    if (!primary) throw new BadRequestException("Primary record not found.");
+
+    const duplicates = docs.filter((d: any) => d._id.toString() !== primaryId);
+
+    if (duplicates.length !== cleanDupIds.length) {
+      throw new BadRequestException(
+        "One or more duplicate records were not found."
+      );
+    }
+
+    // Safety check: ensure same provider + ptName, and share at least one ADJ number with primary.
+
+    const norm = (s: any) =>
+      String(s || "")
+        .trim()
+        .toLowerCase();
+
+    const providerNorm = norm(primary.provider);
+
+    const ptNorm = norm(primary.ptName);
+
+    const primaryAdj = new Set(
+      (primary.adjNumber || []).map((a: any) => String(a?.value || "").trim())
+    );
+
+    for (const dup of duplicates) {
+      if (norm(dup.provider) !== providerNorm || norm(dup.ptName) !== ptNorm) {
+        throw new BadRequestException(
+          "Selected records do not match the same Provider and Patient Name."
+        );
+      }
+
+      const dupAdj = new Set(
+        (dup.adjNumber || []).map((a: any) => String(a?.value || "").trim())
+      );
+
+      const hasCommonAdj = [...dupAdj].some((v) => primaryAdj.has(v));
+
+      if (!hasCommonAdj) {
+        throw new BadRequestException(
+          "Selected records do not share a common ADJ Number with the primary record."
+        );
+      }
+    }
+
+    // Build a set of already-merged comment keys to avoid duplicating if user merges twice.
+
+    const existingMergedKeys = new Set(
+      (primary.comments || [])
+
+        .filter((c: any) => c?.sourceRecordId && c?.sourceCommentId)
+
+        .map(
+          (c: any) =>
+            `${String(c.sourceRecordId)}::${String(c.sourceCommentId)}`
+        )
+    );
+
+    const now = new Date();
+
+    const commentsToInsert: any[] = [];
+
+    const toAuthorId = (a: any) => {
+      if (!a) return a;
+
+      if (typeof a === "string") return new Types.ObjectId(a);
+
+      if (a?._id) return new Types.ObjectId(String(a._id));
+
+      return a;
+    };
+
+    const snapshot = (r: any) => ({
+      recordId: String(r._id),
+
+      provider: r.provider,
+
+      ptName: r.ptName,
+
+      adjNumbers: (r.adjNumber || []).map((x: any) => x?.value).filter(Boolean),
+
+      recordCreatedAt: r.recordCreatedAt || r.createdAt || null,
+
+      assignedCollector: r.assignedCollector
+        ? {
+            _id: r.assignedCollector?._id
+              ? String(r.assignedCollector._id)
+              : String(r.assignedCollector),
+
+            username: r.assignedCollector?.username,
+          }
+        : null,
+    });
+
+    for (const dup of duplicates) {
+      for (const c of dup.comments || []) {
+        const key = `${String(dup._id)}::${String(c._id)}`;
+
+        if (existingMergedKeys.has(key)) continue;
+
+        const createdAt = c.createdAt ? new Date(c.createdAt) : now;
+
+        const updatedAt = c.updatedAt ? new Date(c.updatedAt) : createdAt;
+
+        commentsToInsert.push({
+          _id: new Types.ObjectId(),
+
+          text: c.text,
+
+          status: c.status,
+
+          author: toAuthorId(c.author),
+
+          scheduledDate: c.scheduledDate || null,
+
+          scheduledTime: c.scheduledTime || null,
+
+          offerAmount: c.offerAmount ?? null,
+
+          isCompleted: Boolean(c.isCompleted),
+
+          completedAt: c.completedAt || null,
+
+          createdAt,
+
+          updatedAt,
+
+          isFromMergedRecord: true,
+
+          sourceRecordId: new Types.ObjectId(String(dup._id)),
+
+          sourceCommentId: c._id ? new Types.ObjectId(String(c._id)) : null,
+
+          sourceRecordSnapshot: snapshot(dup),
+
+          mergedAt: now,
+        });
+      }
+    }
+
+    if (commentsToInsert.length === 0) {
+      // Still allow deletion to consolidate records, but report 0 inserted comments.
+
+      const delRes = await this.recordModel.deleteMany({
+        _id: { $in: cleanDupIds.map((id) => new Types.ObjectId(id)) },
+      });
+
+      return {
+        primaryId,
+
+        mergedCommentsInserted: 0,
+
+        duplicatesDeleted: delRes.deletedCount || 0,
+      };
+    }
+
+    // Update primary record with comment insertion + chronological sort by createdAt.
+
+    await this.recordModel.updateOne(
+      { _id: new Types.ObjectId(primaryId) },
+
+      {
+        $push: {
+          comments: {
+            $each: commentsToInsert,
+
+            $sort: { createdAt: 1 },
+          },
+        },
+      },
+
+      { runValidators: true }
+    );
+
+    const delRes = await this.recordModel.deleteMany({
+      _id: { $in: cleanDupIds.map((id) => new Types.ObjectId(id)) },
+    });
+
+    return {
+      primaryId,
+
+      mergedCommentsInserted: commentsToInsert.length,
+
+      duplicatesDeleted: delRes.deletedCount || 0,
+    };
+  }
+
+  /**
+
+
+   * Merge a manually selected set of duplicate records into a single primary record.
+
+
+   *
+
+
+   * ✅ Preserves ALL comments from all selected duplicates
+
+
+   * ✅ Tags merged comments with source record info
+
+
+   * ✅ Maintains original author info and timestamps
+
+
+   * ✅ Deletes duplicate records after merge
+
+
+   */
+
+  async mergeSelectedDuplicates(primaryId: string, duplicateIds: string[]) {
+    if (!Types.ObjectId.isValid(primaryId)) {
+      throw new BadRequestException("Invalid primaryId");
+    }
+
+    if (!Array.isArray(duplicateIds) || duplicateIds.length === 0) {
+      throw new BadRequestException("duplicateIds must be a non-empty array");
+    }
+
+    if (duplicateIds.includes(primaryId)) {
+      throw new BadRequestException(
+        "primaryId must not be included in duplicateIds"
+      );
+    }
+
+    const invalid = duplicateIds.find((id) => !Types.ObjectId.isValid(id));
+
+    if (invalid) {
+      throw new BadRequestException(`Invalid duplicateId: ${invalid}`);
+    }
+
+    const allIds = [primaryId, ...duplicateIds].map(
+      (id) => new Types.ObjectId(id)
+    );
+
+    // Use lean() so we can safely clone subdocs and preserve timestamps exactly.
+
+    const docs = await this.recordModel
+
+      .find({ _id: { $in: allIds } })
+
+      .select({
+        comments: 1,
+        provider: 1,
+        ptName: 1,
+        adjNumber: 1,
+        assignedCollector: 1,
+        recordCreatedAt: 1,
+        createdAt: 1,
+      })
+
+      .populate("assignedCollector", "username")
+
+      .lean()
+
+      .exec();
+
+    const primary = docs.find((d: any) => String(d._id) === String(primaryId));
+
+    if (!primary) {
+      throw new BadRequestException("Primary record not found");
+    }
+
+    const duplicates = docs.filter((d: any) =>
+      duplicateIds.includes(String(d._id))
+    );
+
+    if (duplicates.length !== duplicateIds.length) {
+      const found = new Set(docs.map((d: any) => String(d._id)));
+
+      const missing = duplicateIds.filter((id) => !found.has(String(id)));
+
+      throw new BadRequestException(
+        `Some duplicate records were not found: ${missing.join(", ")}`
+      );
+    }
+
+    // --- Safety check: ensure these look like real duplicates (same provider + ptName, and share an adjNumber with primary) ---
+
+    const norm = (s: any) =>
+      String(s || "")
+        .trim()
+        .toLowerCase();
+
+    const primaryProvider = norm(primary.provider);
+
+    const primaryPtName = norm(primary.ptName);
+
+    const primaryAdj = new Set(
+      (primary.adjNumber || []).map((a: any) => norm(a?.value))
+    );
+
+    for (const d of duplicates) {
+      if (
+        norm(d.provider) !== primaryProvider ||
+        norm(d.ptName) !== primaryPtName
+      ) {
+        throw new BadRequestException(
+          "Selected records do not match (provider/patient). Please only merge true duplicates from the same group."
+        );
+      }
+
+      const dupAdj = (d.adjNumber || []).map((a: any) => norm(a?.value));
+
+      const intersects = dupAdj.some((v: string) => primaryAdj.has(v));
+
+      if (primaryAdj.size > 0 && !intersects) {
+        throw new BadRequestException(
+          "Selected records do not share an ADJ number. Please only merge records that are true duplicates."
+        );
+      }
+    }
+
+    // Build a set of already-merged comment keys to avoid double-merge.
+
+    const existingMergedKeys = new Set(
+      (primary.comments || [])
+
+        .filter(
+          (c: any) =>
+            c?.isFromMergedRecord && c?.sourceRecordId && c?.sourceCommentId
+        )
+
+        .map(
+          (c: any) => `${String(c.sourceRecordId)}:${String(c.sourceCommentId)}`
+        )
+    );
+
+    const now = new Date();
+
+    const commentsToInsert: any[] = [];
+
+    const snapshotFor = (rec: any) => {
+      const assigned = rec.assignedCollector;
+
+      return {
+        provider: rec.provider,
+
+        ptName: rec.ptName,
+
+        adjNumbers: (rec.adjNumber || [])
+          .map((a: any) => a?.value)
+          .filter(Boolean),
+
+        recordCreatedAt: rec.recordCreatedAt || rec.createdAt || null,
+
+        assignedCollector: assigned
+          ? {
+              _id: assigned?._id ? String(assigned._id) : String(assigned),
+
+              username: assigned?.username,
+            }
+          : null,
+      };
+    };
+
+    for (const dup of duplicates) {
+      const srcSnapshot = snapshotFor(dup);
+
+      for (const c of dup.comments || []) {
+        const srcRecordId = String(dup._id);
+
+        const srcCommentId = c?._id ? String(c._id) : "";
+
+        const key = `${srcRecordId}:${srcCommentId}`;
+
+        if (srcCommentId && existingMergedKeys.has(key)) continue;
+
+        // Extract author as ObjectId when populated object exists
+
+        const author =
+          (c as any).author &&
+          typeof (c as any).author === "object" &&
+          (c as any).author._id
+            ? (c as any).author._id
+            : (c as any).author;
+
+        const createdAt = (c as any).createdAt
+          ? new Date((c as any).createdAt)
+          : now;
+
+        const updatedAt = (c as any).updatedAt
+          ? new Date((c as any).updatedAt)
+          : createdAt;
+
+        commentsToInsert.push({
+          _id: new Types.ObjectId(),
+
+          text: (c as any).text,
+
+          status: (c as any).status,
+
+          author,
+
+          scheduledDate: (c as any).scheduledDate || null,
+
+          scheduledTime: (c as any).scheduledTime || null,
+
+          offerAmount: (c as any).offerAmount,
+
+          isCompleted: (c as any).isCompleted || false,
+
+          completedAt: (c as any).completedAt || null,
+
+          createdAt,
+
+          updatedAt,
+
+          isFromMergedRecord: true,
+
+          sourceRecordId: new Types.ObjectId(srcRecordId),
+
+          sourceCommentId: srcCommentId
+            ? new Types.ObjectId(srcCommentId)
+            : undefined,
+
+          sourceRecordSnapshot: srcSnapshot,
+
+          mergedAt: now,
+        });
+      }
+    }
+
+    // If no comments to insert, we still delete duplicates (because user explicitly merged them)
+
+    // but we keep this as a separate step for clarity.
+
+    if (commentsToInsert.length > 0) {
+      await this.recordModel.updateOne(
+        { _id: new Types.ObjectId(primaryId) },
+
+        {
+          $push: {
+            comments: {
+              $each: commentsToInsert,
+
+              $sort: { createdAt: 1 },
+            },
+          },
+        },
+
+        { runValidators: true }
+      );
+    }
+
+    const deleteRes = await this.recordModel.deleteMany({
+      _id: { $in: duplicateIds.map((id) => new Types.ObjectId(id)) },
+    });
+
+    return {
+      primaryId,
+
+      mergedRecords: duplicateIds.length,
+
+      mergedComments: commentsToInsert.length,
+
+      deletedDuplicates: deleteRes.deletedCount || 0,
+    };
+  }
   async findAll(
-    user: any, 
+    user: any,
     collectorId?: string,
     page: number = 1,
     limit: number = 25,
     search?: string,
-    category?: string,
+    category?: string
   ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
-    
     const skip = (page - 1) * limit;
     const baseQuery: any = {};
     let collectorObjectId: Types.ObjectId | null = null;
 
     // [UPDATED] Filter by Provider Role (Case Insensitive + Whitespace Tolerant + Username Fallback)
     if (user.role === UserRole.PROVIDER) {
-        // Use Full Name, fallback to Username if empty
-        const providerName = (user.fullName || user.username || '').trim();
-        
-        if (!providerName) {
-            return { data: [], total: 0, page, limit };
-        }
+      // Use Full Name, fallback to Username if empty
+      const providerName = (user.fullName || user.username || "").trim();
 
-        const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Regex to match name with optional surrounding spaces, case insensitive
-        // Example: User "mmck" matches DB "MMCK", " MMCK ", "mmck"
-        baseQuery.provider = { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, 'i') };
+      if (!providerName) {
+        return { data: [], total: 0, page, limit };
+      }
+
+      const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Regex to match name with optional surrounding spaces, case insensitive
+      // Example: User "mmck" matches DB "MMCK", " MMCK ", "mmck"
+      baseQuery.provider = {
+        $regex: new RegExp(`^\\s*${escapedName}\\s*$`, "i"),
+      };
     }
 
     // Filter by Collector
     if (collectorId) {
-      if (collectorId === 'unassigned') {
+      if (collectorId === "unassigned") {
         baseQuery.$or = [
-            { assignedCollector: null },
-            { assignedCollector: { $exists: false } }
-          ];
+          { assignedCollector: null },
+          { assignedCollector: { $exists: false } },
+        ];
       } else if (Types.ObjectId.isValid(collectorId)) {
         collectorObjectId = new Types.ObjectId(collectorId);
         baseQuery.assignedCollector = collectorObjectId;
       } else if (user.role === UserRole.COLLECTOR) {
-         collectorObjectId = new Types.ObjectId(user.userId);
-         baseQuery.assignedCollector = collectorObjectId;
+        collectorObjectId = new Types.ObjectId(user.userId);
+        baseQuery.assignedCollector = collectorObjectId;
       }
     } else if (user.role === UserRole.COLLECTOR) {
-         collectorObjectId = new Types.ObjectId(user.userId);
-         baseQuery.assignedCollector = collectorObjectId;
+      collectorObjectId = new Types.ObjectId(user.userId);
+      baseQuery.assignedCollector = collectorObjectId;
     }
-    
+
     // Search
     if (search) {
-      const searchRegex = new RegExp(search, 'i'); 
+      const searchRegex = new RegExp(search, "i");
       const searchConditions = [
         { provider: searchRegex },
         { ptName: searchRegex },
-        { 'adjNumber.value': searchRegex },
+        { "adjNumber.value": searchRegex },
         { lienStatus: searchRegex },
         { caseStatus: searchRegex },
-        { 'comments.status': searchRegex }, 
+        { "comments.status": searchRegex },
+        { referenceId: searchRegex },
       ];
-      
+
       if (baseQuery.$or) {
-          baseQuery.$and = [
-              { $or: baseQuery.$or },
-              { $or: searchConditions }
-          ];
-          delete baseQuery.$or; 
+        baseQuery.$and = [{ $or: baseQuery.$or }, { $or: searchConditions }];
+        delete baseQuery.$or;
       } else {
-          baseQuery.$or = searchConditions;
+        baseQuery.$or = searchConditions;
       }
     }
 
-    if (category === 'history' && collectorObjectId) {
-      baseQuery['comments.author'] = collectorObjectId;
-    } else if (category === 'active' && collectorObjectId) {
-      baseQuery['comments.author'] = { $ne: collectorObjectId };
+    if (category === "history" && collectorObjectId) {
+      baseQuery["comments.author"] = collectorObjectId;
+    } else if (category === "active" && collectorObjectId) {
+      baseQuery["comments.author"] = { $ne: collectorObjectId };
     }
 
     const total = await this.recordModel.countDocuments(baseQuery);
-    
-    const data = await this.recordModel
-        .find(baseQuery)
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .sort({ createdAt: -1 }) 
-        .skip(skip)
-        .limit(limit)
-        .exec();
 
-    const processedData = data.map(doc => {
-        const record = doc.toObject() as Record & { lastCommentDate?: Date | null }; 
-        
-        if (category === 'history' && collectorObjectId) {
-            const userComments = record.comments
-                .filter(c => {
-                    if (!c.author) return false;
-                    const authorId = (c.author as any)._id ? (c.author as any)._id.toString() : c.author.toString();
-                    return authorId === collectorObjectId.toString();
-                })
-                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()); 
-            
-            if (userComments.length > 0) {
-                record.lastCommentDate = userComments[0].createdAt;
-            } else {
-                record.lastCommentDate = null;
-            }
+    const data = await this.recordModel
+      .find(baseQuery)
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .exec();
+
+    const processedData = data.map((doc) => {
+      const record = doc.toObject() as Record & {
+        lastCommentDate?: Date | null;
+      };
+
+      if (category === "history" && collectorObjectId) {
+        const userComments = record.comments
+          .filter((c) => {
+            if (!c.author) return false;
+            const authorId = (c.author as any)._id
+              ? (c.author as any)._id.toString()
+              : c.author.toString();
+            return authorId === collectorObjectId.toString();
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+
+        if (userComments.length > 0) {
+          record.lastCommentDate = userComments[0].createdAt;
+        } else {
+          record.lastCommentDate = null;
         }
-        
-        return record;
+      }
+
+      return record;
     });
 
     return { data: processedData, total, page, limit };
@@ -358,44 +979,47 @@ export class RecordsService {
 
   async findById(id: string): Promise<Record> {
     if (!Types.ObjectId.isValid(id)) {
-      throw new BadRequestException('Invalid record ID format.');
+      throw new BadRequestException("Invalid record ID format.");
     }
-    
+
     const record = await this.recordModel
-        .findById(id)
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+      .findById(id)
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
 
     if (!record) {
-      throw new BadRequestException('Record not found');
+      throw new BadRequestException("Record not found");
     }
 
     return record;
   }
 
-  async reassignMany(recordIds: string[], collectorId: string): Promise<{ modifiedCount: number }> {
+  async reassignMany(
+    recordIds: string[],
+    collectorId: string
+  ): Promise<{ modifiedCount: number }> {
     let collectorValue: Types.ObjectId | null = null;
 
-    if (collectorId === 'unassigned') {
+    if (collectorId === "unassigned") {
       collectorValue = null;
     } else if (Types.ObjectId.isValid(collectorId)) {
       collectorValue = new Types.ObjectId(collectorId);
     } else {
-      throw new BadRequestException('Invalid collectorId format.');
+      throw new BadRequestException("Invalid collectorId format.");
     }
 
     const validRecordIds = recordIds
-      .filter(id => Types.ObjectId.isValid(id))
-      .map(id => new Types.ObjectId(id));
-    
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+
     if (validRecordIds.length !== recordIds.length) {
-      throw new BadRequestException('One or more invalid record IDs provided.');
+      throw new BadRequestException("One or more invalid record IDs provided.");
     }
 
     const result = await this.recordModel.updateMany(
       { _id: { $in: validRecordIds } },
-       // ADDED: Update assignedAt
+      // ADDED: Update assignedAt
 
       { $set: { assignedCollector: collectorValue, assignedAt: new Date() } }
     );
@@ -404,88 +1028,123 @@ export class RecordsService {
   }
 
   async assignCollector(id: string, collectorId: string): Promise<Record> {
-    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
-    
+    if (!Types.ObjectId.isValid(id))
+      throw new BadRequestException("Invalid record ID format.");
+
     let collectorValue: Types.ObjectId | null = null;
-    
-    if (collectorId === 'unassigned') {
+
+    if (collectorId === "unassigned") {
       collectorValue = null;
     } else if (Types.ObjectId.isValid(collectorId)) {
       collectorValue = new Types.ObjectId(collectorId);
     } else {
-      throw new BadRequestException('Invalid collectorId format.');
+      throw new BadRequestException("Invalid collectorId format.");
     }
 
     const record = await this.recordModel
-        .findByIdAndUpdate(
-          id, 
-           // ADDED: Update assignedAt
-          { assignedCollector: collectorValue, assignedAt: new Date() }, 
-          { new: true }
-        )
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+      .findByIdAndUpdate(
+        id,
+        // ADDED: Update assignedAt
+        { assignedCollector: collectorValue, assignedAt: new Date() },
+        { new: true }
+      )
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
 
-    if (!record) throw new BadRequestException('Record not found');
+    if (!record) throw new BadRequestException("Record not found");
     return record;
   }
 
   async update(id: string, updateData: any, user: any): Promise<Record> {
-    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('Invalid record ID format.');
+    if (!Types.ObjectId.isValid(id))
+      throw new BadRequestException("Invalid record ID format.");
+
+    // --- SECURITY FIX: Prevent non-admins from changing Provider ---
+    // If user is NOT an Admin/SuperAdmin, delete the provider field from the update payload.
+    // This allows them to save other fields without being blocked, while ensuring provider is unchanged.
+    if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+      delete updateData.provider;
+    }
+    // ---------------------------------------------------------------
 
     if (updateData.bill !== undefined || updateData.paid !== undefined) {
-        const record = await this.recordModel.findById(id);
-        if (!record) throw new BadRequestException('Record not found');
+      const record = await this.recordModel.findById(id);
+      if (!record) throw new BadRequestException("Record not found");
 
-        const newBill = updateData.bill !== undefined ? updateData.bill : record.bill;
-        const newPaid = updateData.paid !== undefined ? updateData.paid : record.paid;
+      const newBill =
+        updateData.bill !== undefined ? updateData.bill : record.bill;
+      const newPaid =
+        updateData.paid !== undefined ? updateData.paid : record.paid;
 
-        if (newBill !== undefined && newPaid !== undefined && newBill !== null && newPaid !== null) {
-            updateData.outstanding = newBill - newPaid;
-        } else if (newBill !== undefined && newBill !== null) {
-            updateData.outstanding = newBill; 
-        }
+      if (
+        newBill !== undefined &&
+        newPaid !== undefined &&
+        newBill !== null &&
+        newPaid !== null
+      ) {
+        updateData.outstanding = newBill - newPaid;
+      } else if (newBill !== undefined && newBill !== null) {
+        updateData.outstanding = newBill;
+      }
     }
 
+    // --- Protect Reference ID from manual updates ---
+    delete updateData.referenceId;
+    // ----------------------------------------------------
 
     const updatedRecord = await this.recordModel
-        .findByIdAndUpdate(id, updateData, { new: true })
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
 
-    if (!updatedRecord) throw new BadRequestException('Record not found');
+    if (!updatedRecord) throw new BadRequestException("Record not found");
     return updatedRecord;
   }
 
   async addComment(
-    recordId: string, 
+    recordId: string,
     commentData: {
       text: string;
       status: string;
       scheduledDate?: Date;
       scheduledTime?: string;
+      offerAmount?: number; // <--- TYPE DEFINITION
     },
     user: any
   ): Promise<Record> {
     if (!Types.ObjectId.isValid(recordId)) {
-      throw new BadRequestException('Invalid record ID format.');
+      throw new BadRequestException("Invalid record ID format.");
     }
-    
-    if ((commentData.status === 'closed' || commentData.status === 'payment_received') && 
-        (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN)) {
-      throw new ForbiddenException('Only administrators or super admins can use this status.');
+
+    if (
+      (commentData.status === "closed" ||
+        commentData.status === "payment_received") &&
+      user.role !== UserRole.ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        "Only administrators or super admins can use this status."
+      );
     }
 
     await this.recordModel.updateOne(
-        { _id: recordId },
-        { 
-            $set: { "comments.$[elem].isCompleted": true, "comments.$[elem].completedAt": new Date() }
+      { _id: recordId },
+      {
+        $set: {
+          "comments.$[elem].isCompleted": true,
+          "comments.$[elem].completedAt": new Date(),
         },
-        { 
-            arrayFilters: [{ "elem.isCompleted": false, "elem.scheduledDate": { $exists: true } }]
-        }
+      },
+      {
+        arrayFilters: [
+          {
+            "elem.isCompleted": false,
+            "elem.scheduledDate": { $exists: true },
+          },
+        ],
+      }
     );
 
     const newComment = {
@@ -495,6 +1154,7 @@ export class RecordsService {
       author: new Types.ObjectId(user.userId),
       scheduledDate: commentData.scheduledDate,
       scheduledTime: commentData.scheduledTime,
+      offerAmount: commentData.offerAmount,
       isCompleted: false,
       completedAt: null,
       createdAt: new Date(),
@@ -502,53 +1162,60 @@ export class RecordsService {
     };
 
     return this.recordModel
-        .findByIdAndUpdate(
-          recordId,
-          { 
-            $push: { 
-              comments: {
-                $each: [newComment],
-                $position: 0
-              }
-            } 
+      .findByIdAndUpdate(
+        recordId,
+        {
+          $push: {
+            comments: {
+              $each: [newComment],
+              $position: 0,
+            },
           },
-          { new: true }
-        )
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+        },
+        { new: true }
+      )
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
   }
 
   async updateComment(
     recordId: string,
     commentId: string,
-    updateData: { isCompleted?: boolean; },
+    updateData: { isCompleted?: boolean },
     user: any
   ): Promise<Record> {
-    if (!Types.ObjectId.isValid(recordId)) throw new BadRequestException('Invalid record ID format.');
-    if (!Types.ObjectId.isValid(commentId)) throw new BadRequestException('Invalid comment ID format.');
+    if (!Types.ObjectId.isValid(recordId))
+      throw new BadRequestException("Invalid record ID format.");
+    if (!Types.ObjectId.isValid(commentId))
+      throw new BadRequestException("Invalid comment ID format.");
 
     const updateQuery: any = {};
     if (updateData.isCompleted !== undefined) {
-      updateQuery['comments.$.isCompleted'] = updateData.isCompleted;
-      updateQuery['comments.$.updatedAt'] = new Date();
+      updateQuery["comments.$.isCompleted"] = updateData.isCompleted;
+      updateQuery["comments.$.updatedAt"] = new Date();
       if (updateData.isCompleted) {
-        updateQuery['comments.$.completedAt'] = new Date();
+        updateQuery["comments.$.completedAt"] = new Date();
       }
     }
 
     return await this.recordModel
-        .findOneAndUpdate(
-          { _id: recordId, 'comments._id': commentId },
-          { $set: updateQuery },
-          { new: true }
-        )
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+      .findOneAndUpdate(
+        { _id: recordId, "comments._id": commentId },
+        { $set: updateQuery },
+        { new: true }
+      )
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
   }
 
-  async getScheduledEvents(userId?: string, startDate?: Date, endDate?: Date): Promise<any[]> {
+  // --- UPDATED METHOD: Accepts full USER object to filter by Provider Name ---
+  async getScheduledEvents(
+    user: any,
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<any[]> {
     const commentConditions: any = {
       scheduledDate: { $exists: true, $ne: null },
       isCompleted: false,
@@ -566,27 +1233,48 @@ export class RecordsService {
       comments: { $elemMatch: commentConditions },
     };
 
-    if (userId && Types.ObjectId.isValid(userId)) {
-      query.assignedCollector = new Types.ObjectId(userId);
+    // 1. Collector Logic (Adapted to check user object)
+    if (
+      user.role === UserRole.COLLECTOR &&
+      user.userId &&
+      Types.ObjectId.isValid(user.userId)
+    ) {
+      query.assignedCollector = new Types.ObjectId(user.userId);
+    }
+
+    // 2. NEW: Provider Logic (Filters by Provider Name, similar to findAll)
+    if (user.role === UserRole.PROVIDER) {
+      const providerName = (user.fullName || user.username || "").trim();
+
+      if (providerName) {
+        const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // Strict regex to match the provider name exactly (case insensitive, ignoring surrounding spaces)
+        query.provider = {
+          $regex: new RegExp(`^\\s*${escapedName}\\s*$`, "i"),
+        };
+      }
     }
 
     const records = await this.recordModel
       .find(query)
-      .populate('assignedCollector', 'username')
-      .populate('comments.author', 'username')
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
       .exec();
 
     const events = [];
-    records.forEach(record => {
+    records.forEach((record) => {
       const latestEventComment = record.comments
-        .filter(comment => {
+        .filter((comment) => {
           if (!comment.scheduledDate || comment.isCompleted) return false;
           const eventDate = new Date(comment.scheduledDate);
           if (startDate && eventDate < startDate) return false;
           if (endDate && eventDate > endDate) return false;
           return true;
         })
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )[0];
 
       if (latestEventComment) {
         events.push({
@@ -597,14 +1285,19 @@ export class RecordsService {
           status: latestEventComment.status,
           scheduledDate: latestEventComment.scheduledDate,
           scheduledTime: latestEventComment.scheduledTime,
+          offerAmount: latestEventComment.offerAmount,
           author: latestEventComment.author,
           assignedCollector: record.assignedCollector,
           createdAt: latestEventComment.createdAt,
         });
       }
     });
-    
-    events.sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
+
+    events.sort(
+      (a, b) =>
+        new Date(a.scheduledDate).getTime() -
+        new Date(b.scheduledDate).getTime()
+    );
     return events;
   }
 
@@ -612,134 +1305,166 @@ export class RecordsService {
     const now = new Date();
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
     const matchConditions: any = {
-        "comments.isCompleted": false,
-        "comments.scheduledTime": { $exists: true, $ne: null },
-        "comments.scheduledDate": { $exists: true, $ne: null },
+      "comments.isCompleted": false,
+      "comments.scheduledTime": { $exists: true, $ne: null },
+      "comments.scheduledDate": { $exists: true, $ne: null },
     };
 
     if (userId && Types.ObjectId.isValid(userId)) {
-        matchConditions.assignedCollector = new Types.ObjectId(userId);
+      matchConditions.assignedCollector = new Types.ObjectId(userId);
     }
-    
-    const records = await this.recordModel.find(matchConditions)
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', 'username')
-        .exec();
+
+    const records = await this.recordModel
+      .find(matchConditions)
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
 
     const notifications = [];
-    records.forEach(record => {
-        const latestIncompleteComment = record.comments
-            .filter(c => !c.isCompleted && c.scheduledDate && c.scheduledTime)
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    records.forEach((record) => {
+      const latestIncompleteComment = record.comments
+        .filter((c) => !c.isCompleted && c.scheduledDate && c.scheduledTime)
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )[0];
 
-        if (!latestIncompleteComment) return;
-        
-        try {
-            const dateFromDb = new Date(latestIncompleteComment.scheduledDate);
-            const [hour, minute] = latestIncompleteComment.scheduledTime.split(':').map(Number);
-            
-            const scheduledDateTime = new Date(
-                dateFromDb.getUTCFullYear(),
-                dateFromDb.getUTCMonth(),
-                dateFromDb.getUTCDate(),
-                hour,
-                minute
-            );
+      if (!latestIncompleteComment) return;
 
-            if (isNaN(scheduledDateTime.getTime())) return;
-            
-            const eventEndTime = new Date(scheduledDateTime.getTime() + 15 * 60 * 1000);
+      try {
+        const dateFromDb = new Date(latestIncompleteComment.scheduledDate);
+        const [hour, minute] = latestIncompleteComment.scheduledTime
+          .split(":")
+          .map(Number);
 
-            const isOverdue = now > eventEndTime;
-            const isUpcoming = scheduledDateTime > now && scheduledDateTime <= oneHourFromNow;
-            const isActive = scheduledDateTime <= now && now <= eventEndTime;
+        const scheduledDateTime = new Date(
+          dateFromDb.getUTCFullYear(),
+          dateFromDb.getUTCMonth(),
+          dateFromDb.getUTCDate(),
+          hour,
+          minute
+        );
 
-            let shouldAdd = false;
-            if (userRole === UserRole.ADMIN || userRole === UserRole.SUPER_ADMIN) {
-                if (isOverdue) {
-                    shouldAdd = true;
-                }
-            } else if (userRole === UserRole.COLLECTOR) {
-                if (isUpcoming || isActive) {
-                    shouldAdd = true;
-                }
-            }
+        if (isNaN(scheduledDateTime.getTime())) return;
 
-            if (shouldAdd) {
-                notifications.push({
-                    recordId: record._id,
-                    commentId: latestIncompleteComment._id,
-                    ptName: record.ptName,
-                    text: latestIncompleteComment.text,
-                    status: latestIncompleteComment.status,
-                    scheduledDate: latestIncompleteComment.scheduledDate,
-                    scheduledTime: latestIncompleteComment.scheduledTime,
-                    author: latestIncompleteComment.author,
-                    assignedCollector: record.assignedCollector,
-                    isOverdue: isOverdue,
-                    isAssignment: false // Flag as task
-                });
-            }
-        } catch (e) {
-            console.error("Error processing notification for record:", record._id, e);
+        const eventEndTime = new Date(
+          scheduledDateTime.getTime() + 15 * 60 * 1000
+        );
+
+        const isOverdue = now > eventEndTime;
+        const isUpcoming =
+          scheduledDateTime > now && scheduledDateTime <= oneHourFromNow;
+        const isActive = scheduledDateTime <= now && now <= eventEndTime;
+
+        let shouldAdd = false;
+        if (userRole === UserRole.ADMIN || userRole === UserRole.SUPER_ADMIN) {
+          if (isOverdue) {
+            shouldAdd = true;
+          }
+        } else if (userRole === UserRole.COLLECTOR) {
+          if (isUpcoming || isActive) {
+            shouldAdd = true;
+          }
         }
+
+        if (shouldAdd) {
+          notifications.push({
+            recordId: record._id,
+            commentId: latestIncompleteComment._id,
+            ptName: record.ptName,
+            text: latestIncompleteComment.text,
+            status: latestIncompleteComment.status,
+            scheduledDate: latestIncompleteComment.scheduledDate,
+            scheduledTime: latestIncompleteComment.scheduledTime,
+            author: latestIncompleteComment.author,
+            assignedCollector: record.assignedCollector,
+            isOverdue: isOverdue,
+            isAssignment: false, // Flag as task
+          });
+        }
+      } catch (e) {
+        console.error(
+          "Error processing notification for record:",
+          record._id,
+          e
+        );
+      }
     });
     // --- 2. New Assignment Notifications (NEW LOGIC) ---
-   // Only fetch assignments for collectors, not admins
-    if (userRole === UserRole.COLLECTOR && userId && Types.ObjectId.isValid(userId)) {
-        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        const assignedRecords = await this.recordModel.find({
-            assignedCollector: new Types.ObjectId(userId),
-            assignedAt: { $gte: twentyFourHoursAgo } // Assigned in last 24 hours
+    // Only fetch assignments for collectors, not admins
+    if (
+      userRole === UserRole.COLLECTOR &&
+      userId &&
+      Types.ObjectId.isValid(userId)
+    ) {
+      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const assignedRecords = await this.recordModel
+        .find({
+          assignedCollector: new Types.ObjectId(userId),
+          assignedAt: { $gte: twentyFourHoursAgo }, // Assigned in last 24 hours
         })
-        .populate('assignedCollector', 'username')
-        .populate('comments.author', '_id') // Populate author ID to check if collector commented
+        .populate("assignedCollector", "username")
+        .populate("comments.author", "_id") // Populate author ID to check if collector commented
         .exec();
-        assignedRecords.forEach(record => {
-            // Check if the collector has already "touched" this record (added a comment)
-           // AFTER the assignment time.
-            const hasActivity = record.comments.some(comment => {
-                // Ensure comment exists and has creation date
-                if (!comment.createdAt) return false;
-                // Check if comment is by the current collector
-                const commentAuthorId = (comment.author as any)._id
-                    ? (comment.author as any)._id.toString()
-                    : comment.author.toString();
-                if (commentAuthorId !== userId.toString()) return false;
-               // Check if comment was made AFTER the assignment time
-               // This implies the collector started working on it
-               return new Date(comment.createdAt) > new Date(record.assignedAt);
-            });
-            // If there is activity, DO NOT show the notification (return early from this iteration)
-            if (hasActivity) return;
-            // Avoid duplicate notifications if the record already has a task in the list
-            // (Optional: remove this check if you want both notification types to show)
-            const exists = notifications.some(n => n.recordId.toString() === record._id.toString());
-            if (!exists) {
-                notifications.push({
-                    recordId: record._id,
-                    ptName: record.ptName,
-                    text: `New record assigned: ${record.ptName}`,
-                    status: 'Assigned',
-                    scheduledDate: record.assignedAt,
-                    scheduledTime: 'Now', // Formatting for frontend
-                    assignedCollector: record.assignedCollector,
-                    isAssignment: true, // Flag as assignment
-                    isOverdue: false
-                });
-            }
+      assignedRecords.forEach((record) => {
+        // Check if the collector has already "touched" this record (added a comment)
+        // AFTER the assignment time.
+        const hasActivity = record.comments.some((comment) => {
+          // Ensure comment exists and has creation date
+          if (!comment.createdAt) return false;
+          // Check if comment is by the current collector
+          const commentAuthorId = (comment.author as any)._id
+            ? (comment.author as any)._id.toString()
+            : comment.author.toString();
+          if (commentAuthorId !== userId.toString()) return false;
+          // Check if comment was made AFTER the assignment time
+          // This implies the collector started working on it
+          return new Date(comment.createdAt) > new Date(record.assignedAt);
         });
+        // If there is activity, DO NOT show the notification (return early from this iteration)
+        if (hasActivity) return;
+        // Avoid duplicate notifications if the record already has a task in the list
+        // (Optional: remove this check if you want both notification types to show)
+        const exists = notifications.some(
+          (n) => n.recordId.toString() === record._id.toString()
+        );
+        if (!exists) {
+          notifications.push({
+            recordId: record._id,
+            ptName: record.ptName,
+            text: `New record assigned: ${record.ptName}`,
+            status: "Assigned",
+            scheduledDate: record.assignedAt,
+            scheduledTime: "Now", // Formatting for frontend
+            assignedCollector: record.assignedCollector,
+            isAssignment: true, // Flag as assignment
+            isOverdue: false,
+          });
+        }
+      });
     }
 
     notifications.sort((a, b) => {
-        const dateAObj = new Date(a.scheduledDate);
-        const [hourA, minA] = a.scheduledTime.split(':').map(Number);
-        const dateA = new Date(dateAObj.getUTCFullYear(), dateAObj.getUTCMonth(), dateAObj.getUTCDate(), hourA, minA);
+      const dateAObj = new Date(a.scheduledDate);
+      const [hourA, minA] = a.scheduledTime.split(":").map(Number);
+      const dateA = new Date(
+        dateAObj.getUTCFullYear(),
+        dateAObj.getUTCMonth(),
+        dateAObj.getUTCDate(),
+        hourA,
+        minA
+      );
 
-        const dateBObj = new Date(b.scheduledDate);
-        const [hourB, minB] = b.scheduledTime.split(':').map(Number);
-        const dateB = new Date(dateBObj.getUTCFullYear(), dateBObj.getUTCMonth(), dateBObj.getUTCDate(), hourB, minB);
-        return dateA.getTime() - dateB.getTime();
+      const dateBObj = new Date(b.scheduledDate);
+      const [hourB, minB] = b.scheduledTime.split(":").map(Number);
+      const dateB = new Date(
+        dateBObj.getUTCFullYear(),
+        dateBObj.getUTCMonth(),
+        dateBObj.getUTCDate(),
+        hourB,
+        minB
+      );
+      return dateA.getTime() - dateB.getTime();
     });
 
     return notifications;
@@ -748,25 +1473,29 @@ export class RecordsService {
   async getOverdueEvents(): Promise<any[]> {
     const now = new Date();
 
-    const records = await this.recordModel.find({
-      comments: {
-        $elemMatch: {
-          isCompleted: false,
-          scheduledDate: { $exists: true, $ne: null }
-        }
-      }
-    })
-    .populate('assignedCollector', 'username')
-    .populate('comments.author', 'username')
-    .exec();
+    const records = await this.recordModel
+      .find({
+        comments: {
+          $elemMatch: {
+            isCompleted: false,
+            scheduledDate: { $exists: true, $ne: null },
+          },
+        },
+      })
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username")
+      .exec();
 
     const overdueTasks = [];
 
-    records.forEach(record => {
+    records.forEach((record) => {
       try {
         const latestIncompleteComment = record.comments
-            .filter(c => !c.isCompleted && c.scheduledDate)
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+          .filter((c) => !c.isCompleted && c.scheduledDate)
+          .sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          )[0];
 
         if (!latestIncompleteComment) return;
 
@@ -774,56 +1503,84 @@ export class RecordsService {
         let eventEndTime;
 
         if (latestIncompleteComment.scheduledTime) {
-            const [hours, minutes] = latestIncompleteComment.scheduledTime.split(':').map(Number);
-            const eventStartTime = new Date(
-                eventDateObj.getUTCFullYear(),
-                eventDateObj.getUTCMonth(),
-                eventDateObj.getUTCDate(),
-                hours,
-                minutes
-            );
-            eventEndTime = new Date(eventStartTime.getTime() + 15 * 60 * 1000);
+          const [hours, minutes] = latestIncompleteComment.scheduledTime
+            .split(":")
+            .map(Number);
+          const eventStartTime = new Date(
+            eventDateObj.getUTCFullYear(),
+            eventDateObj.getUTCMonth(),
+            eventDateObj.getUTCDate(),
+            hours,
+            minutes
+          );
+          eventEndTime = new Date(eventStartTime.getTime() + 15 * 60 * 1000);
         } else {
-            eventEndTime = new Date(
-                eventDateObj.getUTCFullYear(),
-                eventDateObj.getUTCMonth(),
-                eventDateObj.getUTCDate(),
-                23, 59, 59, 999
-            );
+          eventEndTime = new Date(
+            eventDateObj.getUTCFullYear(),
+            eventDateObj.getUTCMonth(),
+            eventDateObj.getUTCDate(),
+            23,
+            59,
+            59,
+            999
+          );
         }
-        
+
         if (now > eventEndTime) {
-            overdueTasks.push({
-                recordId: record._id,
-                commentId: latestIncompleteComment._id,
-                ptName: record.ptName,
-                text: latestIncompleteComment.text,
-                scheduledDate: latestIncompleteComment.scheduledDate,
-                scheduledTime: latestIncompleteComment.scheduledTime,
-                author: latestIncompleteComment.author,
-                assignedCollector: record.assignedCollector,
-            });
+          overdueTasks.push({
+            recordId: record._id,
+            commentId: latestIncompleteComment._id,
+            ptName: record.ptName,
+            text: latestIncompleteComment.text,
+            scheduledDate: latestIncompleteComment.scheduledDate,
+            scheduledTime: latestIncompleteComment.scheduledTime,
+            author: latestIncompleteComment.author,
+            assignedCollector: record.assignedCollector,
+          });
         }
       } catch (e) {
-        console.error(`Failed to process overdue event for record ${record._id}:`, e);
+        console.error(
+          `Failed to process overdue event for record ${record._id}:`,
+          e
+        );
       }
     });
-    
+
     overdueTasks.sort((a, b) => {
-        const dateAObj = new Date(a.scheduledDate);
-        const [hourA, minA] = a.scheduledTime ? a.scheduledTime.split(':').map(Number) : [0, 0];
-        const dateA = new Date(Date.UTC(dateAObj.getUTCFullYear(), dateAObj.getUTCMonth(), dateAObj.getUTCDate(), hourA, minA));
+      const dateAObj = new Date(a.scheduledDate);
+      const [hourA, minA] = a.scheduledTime
+        ? a.scheduledTime.split(":").map(Number)
+        : [0, 0];
+      const dateA = new Date(
+        Date.UTC(
+          dateAObj.getUTCFullYear(),
+          dateAObj.getUTCMonth(),
+          dateAObj.getUTCDate(),
+          hourA,
+          minA
+        )
+      );
 
-        const dateBObj = new Date(b.scheduledDate);
-        const [hourB, minB] = b.scheduledTime ? b.scheduledTime.split(':').map(Number) : [0, 0];
-        const dateB = new Date(Date.UTC(dateBObj.getUTCFullYear(), dateBObj.getUTCMonth(), dateBObj.getUTCDate(), hourB, minB));
+      const dateBObj = new Date(b.scheduledDate);
+      const [hourB, minB] = b.scheduledTime
+        ? b.scheduledTime.split(":").map(Number)
+        : [0, 0];
+      const dateB = new Date(
+        Date.UTC(
+          dateBObj.getUTCFullYear(),
+          dateBObj.getUTCMonth(),
+          dateBObj.getUTCDate(),
+          hourB,
+          minB
+        )
+      );
 
-        return dateA.getTime() - dateB.getTime();
+      return dateA.getTime() - dateB.getTime();
     });
 
     return overdueTasks;
   }
-  
+
   async getHearingEvents(startDate?: Date, endDate?: Date): Promise<any[]> {
     const query: any = {
       hearingDate: { $exists: true, $ne: null },
@@ -838,73 +1595,93 @@ export class RecordsService {
 
     const records = await this.recordModel
       .find(query)
-      .populate('assignedCollector', 'username')
+      .populate("assignedCollector", "username")
+      .populate("comments.author", "username") // <--- ADDED: Populate comment authors
       .exec();
 
-    const events = records.map(record => ({
-      recordId: record._id,
-      provider: record.provider,
-      ptName: record.ptName,
-      adjNumber: record.adjNumber,
-      caseStatus: record.caseStatus,
-      hearingStatus: record.hearingStatus,
-      hearingDate: record.hearingDate,
-      hearingTime: record.hearingTime,
-      judgeName: record.judgeName,
-      courtRoomlink: record.courtRoomlink,
-      judgePhone: record.judgePhone,
-      AccesCode: record.AccesCode,
-      boardLocation: record.boardLocation,
-      pmrStatus: record.pmrStatus,
-      dorFiledBy: record.dorFiledBy,
-      status4903_8: record.status4903_8,
-      judgeOrderStatus: record.judgeOrderStatus,
-      assignedCollector: record.assignedCollector,
-    }));
-    
-    events.sort((a, b) => new Date(a.hearingDate).getTime() - new Date(b.hearingDate).getTime());
+    const events = records.map((record) => {
+      // --- ADDED: Logic to find the latest comment author ---
+      const latestComment =
+        record.comments && record.comments.length > 0
+          ? record.comments.sort(
+              (a: any, b: any) =>
+                new Date(b.createdAt).getTime() -
+                new Date(a.createdAt).getTime()
+            )[0]
+          : null;
+
+      return {
+        recordId: record._id,
+        provider: record.provider,
+        ptName: record.ptName,
+        adjNumber: record.adjNumber,
+        caseStatus: record.caseStatus,
+        hearingStatus: record.hearingStatus,
+        hearingDate: record.hearingDate,
+        hearingTime: record.hearingTime,
+        judgeName: record.judgeName,
+        courtRoomlink: record.courtRoomlink,
+        judgePhone: record.judgePhone,
+        AccesCode: record.AccesCode,
+        boardLocation: record.boardLocation,
+        pmrStatus: record.pmrStatus,
+        dorFiledBy: record.dorFiledBy,
+        status4903_8: record.status4903_8,
+        judgeOrderStatus: record.judgeOrderStatus,
+        assignedCollector: record.assignedCollector,
+        author: latestComment ? latestComment.author : null, // <--- ADDED: Return author of latest comment
+      };
+    });
+
+    events.sort(
+      (a, b) =>
+        new Date(a.hearingDate).getTime() - new Date(b.hearingDate).getTime()
+    );
     return events;
   }
 
   async deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
-    const validIds = ids.filter(id => Types.ObjectId.isValid(id)).map(id => new Types.ObjectId(id));
-    
+    const validIds = ids
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+
     if (validIds.length !== ids.length) {
-      throw new BadRequestException('One or more invalid record IDs were provided.');
+      throw new BadRequestException(
+        "One or more invalid record IDs were provided."
+      );
     }
 
     const result = await this.recordModel.deleteMany({
-      _id: { $in: validIds }
+      _id: { $in: validIds },
     });
 
     return { deletedCount: result.deletedCount };
   }
-    
-  async getSummary(user: any): Promise<any> { 
-    
+
+  async getSummary(user: any): Promise<any> {
     const aggregationPipeline: any[] = [];
 
     if (user.role === UserRole.COLLECTOR) {
       if (!user.userId || !Types.ObjectId.isValid(user.userId)) {
-        return []; 
+        return [];
       }
       aggregationPipeline.push({
         $match: {
-          assignedCollector: new Types.ObjectId(user.userId)
-        }
+          assignedCollector: new Types.ObjectId(user.userId),
+        },
       });
     }
     // [UPDATED] Filter summary for Providers with whitespace tolerance
     else if (user.role === UserRole.PROVIDER) {
-        const providerName = (user.fullName || user.username || '').trim();
-        if (!providerName) return [];
+      const providerName = (user.fullName || user.username || "").trim();
+      if (!providerName) return [];
 
-        const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        aggregationPipeline.push({
-            $match: {
-                provider: { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, 'i') }
-            }
-        });
+      const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      aggregationPipeline.push({
+        $match: {
+          provider: { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, "i") },
+        },
+      });
     }
 
     aggregationPipeline.push({
@@ -913,8 +1690,8 @@ export class RecordsService {
           {
             $match: {
               provider: { $exists: true, $nin: [null, ""] },
-              caseStatus: { $exists: true, $nin: [null, ""] }
-            }
+              caseStatus: { $exists: true, $nin: [null, ""] },
+            },
           },
           {
             $project: {
@@ -923,98 +1700,111 @@ export class RecordsService {
                 $switch: {
                   branches: [
                     {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /c ?& ?r.*granted/i } },
-                      then: "C & R (GRANTED)"
+                      case: {
+                        $regexMatch: {
+                          input: "$caseStatus",
+                          regex: /c ?& ?r.*granted/i,
+                        },
+                      },
+                      then: "C & R (GRANTED)",
                     },
                     {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /cic.*pend/i } },
-                      then: "CIC PENDING"
+                      case: {
+                        $regexMatch: {
+                          input: "$caseStatus",
+                          regex: /cic.*pend/i,
+                        },
+                      },
+                      then: "CIC PENDING",
                     },
                     {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
-                      then: "SETTLED"
-                    }
+                      case: {
+                        $regexMatch: {
+                          input: "$caseStatus",
+                          regex: /settled/i,
+                        },
+                      },
+                      then: "SETTLED",
+                    },
                   ],
-                  default: { // MODIFIED: Check for the specific values, case-insensitive
+                  default: {
+                    // MODIFIED: Check for the specific values, case-insensitive
 
-                      $cond: [
+                    $cond: [
+                      {
+                        $regexMatch: {
+                          input: "$caseStatus",
+                          regex: /settled/i,
+                        },
+                      },
 
-                        { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
+                      "SETTLED",
 
-                        "SETTLED",
-
-                        "OTHER" // Default for non-matching
-
-                      ]
-
-                  }
-                }
-              }
-            }
+                      "OTHER", // Default for non-matching
+                    ],
+                  },
+                },
+              },
+            },
           },
           {
             $group: {
               _id: {
                 provider: "$provider",
-                status: "$standardizedStatus"
+                status: "$standardizedStatus",
               },
-              count: { $sum: 1 }
-            }
+              count: { $sum: 1 },
+            },
           },
           {
             $project: {
               _id: 0,
               provider: "$_id.provider",
               status: "$_id.status",
-              count: "$count"
-            }
-          }
+              count: "$count",
+            },
+          },
         ],
         byCommentStatus: [
           {
             $match: {
               provider: { $exists: true, $nin: [null, ""] },
-              "comments.status": { $regex: /^out of sol$/i }
-            }
+              "comments.status": { $regex: /^out of sol$/i },
+            },
           },
           {
             $group: {
               _id: "$provider",
-              count: { $sum: 1 }
-            }
+              count: { $sum: 1 },
+            },
           },
           {
             $project: {
               _id: 0,
               provider: "$_id",
-              status: "OUT OF SOL", 
-              count: "$count"
-            }
-          }
-        ]
-      }
+              status: "OUT OF SOL",
+              count: "$count",
+            },
+          },
+        ],
+      },
     });
 
     aggregationPipeline.push(
       {
         $project: {
-          allStatuses: { $concatArrays: ["$byCaseStatus", "$byCommentStatus"] }
-        }
+          allStatuses: { $concatArrays: ["$byCaseStatus", "$byCommentStatus"] },
+        },
       },
       {
-        $unwind: "$allStatuses"
+        $unwind: "$allStatuses",
       },
       {
-         $match: {
-          "allStatuses.status": { 
-            $in: [
-              "C & R (GRANTED)", 
-              "CIC PENDING", 
-              "SETTLED", 
-              "OUT OF SOL"
-            ] 
-          }
-        }
+        $match: {
+          "allStatuses.status": {
+            $in: ["C & R (GRANTED)", "CIC PENDING", "SETTLED", "OUT OF SOL"],
+          },
+        },
       },
       {
         $group: {
@@ -1022,51 +1812,62 @@ export class RecordsService {
           statuses: {
             $push: {
               status: "$allStatuses.status",
-              count: "$allStatuses.count"
-            }
+              count: "$allStatuses.count",
+            },
           },
-          totalCount: { $sum: "$allStatuses.count" }
-        }
+          totalCount: { $sum: "$allStatuses.count" },
+        },
       },
       {
         $project: {
           _id: 0,
           provider: "$_id",
           statuses: 1,
-          totalCount: 1
-        }
+          totalCount: 1,
+        },
       },
       {
         $sort: {
-          provider: 1
-        }
+          provider: 1,
+        },
       }
     );
 
-    const facetStage = aggregationPipeline.find(stage => stage.$facet);
+    const facetStage = aggregationPipeline.find((stage) => stage.$facet);
     if (facetStage) {
-        const projectStage = facetStage.$facet.byCaseStatus.find(stage => stage.$project);
-        if (projectStage) {
-            projectStage.$project.standardizedStatus = {
-                $switch: {
-                  branches: [
-                    {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /c ?& ?r.*granted/i } },
-                      then: "C & R (GRANTED)"
-                    },
-                    {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /cic.*pend/i } },
-                      then: "CIC PENDING"
-                    },
-                    {
-                      case: { $regexMatch: { input: "$caseStatus", regex: /settled/i } },
-                      then: "SETTLED"
-                    }
-                  ],
-                  default: "OTHER" 
-                }
-            };
-        }
+      const projectStage = facetStage.$facet.byCaseStatus.find(
+        (stage) => stage.$project
+      );
+      if (projectStage) {
+        projectStage.$project.standardizedStatus = {
+          $switch: {
+            branches: [
+              {
+                case: {
+                  $regexMatch: {
+                    input: "$caseStatus",
+                    regex: /c ?& ?r.*granted/i,
+                  },
+                },
+                then: "C & R (GRANTED)",
+              },
+              {
+                case: {
+                  $regexMatch: { input: "$caseStatus", regex: /cic.*pend/i },
+                },
+                then: "CIC PENDING",
+              },
+              {
+                case: {
+                  $regexMatch: { input: "$caseStatus", regex: /settled/i },
+                },
+                then: "SETTLED",
+              },
+            ],
+            default: "OTHER",
+          },
+        };
+      }
     }
 
     return this.recordModel.aggregate(aggregationPipeline);
