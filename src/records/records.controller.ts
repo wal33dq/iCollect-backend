@@ -150,6 +150,27 @@ export class RecordsController {
   return this.recordsService.findDuplicates();
   }
 
+  /**
+   * Merge only the duplicates the user selected.
+   *
+   * ✅ Merge multiple duplicates into one primary record
+   * ✅ Preserve ALL comments and keep author + timestamps
+   * ✅ Tag merged comments with source record information
+   * ✅ Auto-delete duplicates after merge
+   */
+  @Post('duplicates/merge-group')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async mergeSelectedDuplicateGroup(
+    @Body() body: { primaryId: string; duplicateIds: string[] },
+  ) {
+    const { primaryId, duplicateIds } = body || ({} as any);
+    if (!primaryId || !Array.isArray(duplicateIds) || duplicateIds.length === 0) {
+      throw new BadRequestException('primaryId and duplicateIds[] are required');
+    }
+    return this.recordsService.mergeSelectedDuplicates(primaryId, duplicateIds);
+  }
+
   @Get(':id')
   async getRecord(@Param('id') id: string, @Request() req) {
     const record = await this.recordsService.findById(id);

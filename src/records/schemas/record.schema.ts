@@ -39,6 +39,28 @@ class Comment {
   @Prop()
   offerAmount: number; 
   // ----------------
+
+  // ---------------- MERGE METADATA (for duplicate merge) ----------------
+  // True if this comment originally lived on another (duplicate) record.
+  @Prop({ default: false })
+  isFromMergedRecord: boolean;
+
+  // The record this comment originally came from.
+  @Prop({ type: Types.ObjectId })
+  sourceRecordId: Types.ObjectId;
+
+  // The original comment id on the source record.
+  @Prop({ type: Types.ObjectId })
+  sourceCommentId: Types.ObjectId;
+
+  // Small snapshot so UI can display "Merged from ..." without extra fetches.
+  @Prop({ type: Object })
+  sourceRecordSnapshot: any;
+
+  // When this comment was merged.
+  @Prop()
+  mergedAt: Date;
+  // ----------------------------------------------------------------------
   @Prop({ default: false })
   isCompleted: boolean;
 
