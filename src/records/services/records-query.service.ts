@@ -27,7 +27,7 @@ export class RecordsQueryService {
     category?: string
   ): Promise<{ data: any[]; total: number; page: number; limit: number }> {
     const skip = (page - 1) * limit;
-    const baseQuery: any = {};
+    const andFilters: any[] = [];
     let collectorObjectId: Types.ObjectId | null = null;
 
     // Provider Role filter (Case Insensitive + Whitespace tolerant)
@@ -36,26 +36,66 @@ export class RecordsQueryService {
       if (!providerName) return { data: [], total: 0, page, limit };
 
       const escapedName = providerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      baseQuery.provider = { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, "i") };
+      andFilters.push({
+        provider: { $regex: new RegExp(`^\\s*${escapedName}\\s*$`, "i") },
+      });
     }
 
-    // Collector filter
-    if (collectorId) {
-      if (collectorId === "unassigned") {
-        baseQuery.$or = [
-          { assignedCollector: null },
-          { assignedCollector: { $exists: false } },
-        ];
-      } else if (Types.ObjectId.isValid(collectorId)) {
-        collectorObjectId = new Types.ObjectId(collectorId);
-        baseQuery.assignedCollector = collectorObjectId;
-      } else if (user.role === UserRole.COLLECTOR) {
-        collectorObjectId = new Types.ObjectId(user.userId);
-        baseQuery.assignedCollector = collectorObjectId;
+    // --- Collector filter ---
+    // IMPORTANT: Collectors should NEVER be allowed to query other collectors' records.
+    const isCollectorUser = user.role === UserRole.COLLECTOR;
+    const effectiveCollectorId = isCollectorUser ? user.userId : collectorId;
+
+    if (effectiveCollectorId) {
+      if (effectiveCollectorId === "unassigned") {
+        // Only allow unassigned for Admin/Super Admin/Provider, not collectors.
+        if (isCollectorUser) {
+          throw new BadRequestException("Collectors cannot view unassigned records.");
+        }
+        andFilters.push({
+          $or: [
+            { assignedCollector: null },
+            { assignedCollector: { $exists: false } },
+          ],
+        });
+      } else {
+        if (!Types.ObjectId.isValid(effectiveCollectorId)) {
+          throw new BadRequestException("Invalid collectorId format.");
+        }
+
+        collectorObjectId = new Types.ObjectId(effectiveCollectorId);
+        const idStr = collectorObjectId.toString();
+
+        // Backward-compatible match:
+        // ✅ Normal docs: assignedCollector: ObjectId(...)
+        // ⚠️ Legacy docs: assignedCollector: { _id: ObjectId(...) OR "...", username: "..." }
+        // ⚠️ Extra safety: assignedCollector: "..." (string)
+        andFilters.push({
+          $or: [
+            { assignedCollector: collectorObjectId },
+            { assignedCollector: idStr },
+            { "assignedCollector._id": collectorObjectId },
+            { "assignedCollector._id": idStr },
+          ],
+        });
       }
-    } else if (user.role === UserRole.COLLECTOR) {
+    } else if (isCollectorUser) {
+      // Collector without explicit collectorId (should not happen, but keep safe)
+      if (!Types.ObjectId.isValid(user.userId)) {
+        throw new BadRequestException("Invalid collector userId in token.");
+      }
+
       collectorObjectId = new Types.ObjectId(user.userId);
-      baseQuery.assignedCollector = collectorObjectId;
+      const idStr = collectorObjectId.toString();
+
+      andFilters.push({
+        $or: [
+          { assignedCollector: collectorObjectId },
+          { assignedCollector: idStr },
+          { "assignedCollector._id": collectorObjectId },
+          { "assignedCollector._id": idStr },
+        ],
+      });
     }
 
     // Search
@@ -70,20 +110,37 @@ export class RecordsQueryService {
         { "comments.status": searchRegex },
         { referenceId: searchRegex },
       ];
+      andFilters.push({ $or: searchConditions });
+    }
 
-      if (baseQuery.$or) {
-        baseQuery.$and = [{ $or: baseQuery.$or }, { $or: searchConditions }];
-        delete baseQuery.$or;
-      } else {
-        baseQuery.$or = searchConditions;
+    // Category filtering for collector dashboard
+    if (collectorObjectId) {
+      const idStr = collectorObjectId.toString();
+
+      if (category === "history") {
+        // Match both comment-author shapes
+        andFilters.push({
+          $or: [
+            { "comments.author": collectorObjectId },
+            { "comments.author": idStr },
+            { "comments.author._id": collectorObjectId },
+            { "comments.author._id": idStr },
+          ],
+        });
+      } else if (category === "active") {
+        // Active = assigned to collector but NO comments by them
+        andFilters.push({
+          $nor: [
+            { "comments.author": collectorObjectId },
+            { "comments.author": idStr },
+            { "comments.author._id": collectorObjectId },
+            { "comments.author._id": idStr },
+          ],
+        });
       }
     }
 
-    if (category === "history" && collectorObjectId) {
-      baseQuery["comments.author"] = collectorObjectId;
-    } else if (category === "active" && collectorObjectId) {
-      baseQuery["comments.author"] = { $ne: collectorObjectId };
-    }
+    const baseQuery = andFilters.length > 0 ? { $and: andFilters } : {};
 
     const total = await this.recordModel.countDocuments(baseQuery);
 
@@ -113,7 +170,8 @@ export class RecordsQueryService {
               new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
 
-        record.lastCommentDate = userComments.length > 0 ? userComments[0].createdAt : null;
+        record.lastCommentDate =
+          userComments.length > 0 ? userComments[0].createdAt : null;
       }
 
       return record;
