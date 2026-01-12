@@ -175,17 +175,17 @@ private ptTimeFromDate(value: any): string {
 
           if (isNaN(scheduledUtc.getTime())) return;
 
-          const isUpcoming =
-            scheduledUtc > nowUtc && scheduledUtc <= oneHourFromNowUtc;
-          const isActive =
-            scheduledUtc <= nowUtc && scheduledUtc >= new Date(nowUtc.getTime() - 60 * 60 * 1000);
-          const isOverdue = scheduledUtc < new Date(nowUtc.getTime() - 60 * 60 * 1000);
+          const oneHourBefore = new Date(scheduledUtc.getTime() - 60 * 60 * 1000);
+          // Upcoming = within 1 hour *before* the scheduled time (Pacific Time), and disappears once time is reached
+          const isUpcoming = nowUtc >= oneHourBefore && nowUtc < scheduledUtc;
+          // Overdue = scheduled time reached/passed (admins/super admins may see this)
+          const isOverdue = nowUtc >= scheduledUtc;
 
           let shouldAdd = false;
           if (userRole === UserRole.ADMIN || userRole === UserRole.SUPER_ADMIN) {
             if (isOverdue) shouldAdd = true;
           } else if (userRole === UserRole.COLLECTOR) {
-            if (isUpcoming || isActive) shouldAdd = true;
+            if (isUpcoming) shouldAdd = true;
           }
 
           if (shouldAdd) {
@@ -242,6 +242,11 @@ private ptTimeFromDate(value: any): string {
 
           if (!exists) {
             const assignedAt = (record as any).assignedAt;
+            const assignedAtDate = assignedAt instanceof Date ? assignedAt : new Date(assignedAt);
+            const assignmentExpiresAt = new Date(assignedAtDate.getTime() + 60 * 60 * 1000);
+            // Auto-hide assignment notification after 1 hour
+            if (nowUtc >= assignmentExpiresAt) return;
+
             notifications.push({
               recordId: record._id,
               ptName: record.ptName,
