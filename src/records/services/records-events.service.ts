@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model, Types } from "mongoose";
+import { DateTime } from "luxon";
 import { Record, RecordDocument } from "../schemas/record.schema";
 import { UserRole } from "../../users/schemas/user-role.enum";
 
@@ -9,6 +10,44 @@ export class RecordsEventsService {
   constructor(
     @InjectModel(Record.name) private readonly recordModel: Model<RecordDocument>
   ) {}
+
+
+private readonly PT_ZONE = "America/Los_Angeles";
+
+private dateOnlyIso(value: any): string | null {
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return null;
+  // Always use the ISO calendar date so it doesn't drift by server timezone
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+/**
+ * Interpret {scheduledDate, scheduledTime} as Pacific Time and return a UTC JS Date.
+ * scheduledDate is treated as a calendar date (YYYY-MM-DD) regardless of server timezone.
+ */
+private ptDateTimeToUtc(scheduledDate: any, scheduledTime: string): Date {
+  const iso = this.dateOnlyIso(scheduledDate);
+  if (!iso) return new Date(scheduledDate);
+
+  const [hRaw, mRaw] = String(scheduledTime || "00:00").split(":");
+  const hour = Number(hRaw);
+  const minute = Number(mRaw);
+
+  const dt = DateTime.fromISO(iso, { zone: this.PT_ZONE }).set({
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0,
+    second: 0,
+    millisecond: 0,
+  });
+
+  return dt.isValid ? dt.toUTC().toJSDate() : new Date(scheduledDate);
+}
+
+private ptTimeFromDate(value: any): string {
+  const d = value instanceof Date ? value : new Date(value);
+  const dt = DateTime.fromJSDate(d).setZone(this.PT_ZONE);
+  return dt.isValid ? dt.toFormat("HH:mm") : "00:00";
+}
 
   async getScheduledEvents(
     user: any,
@@ -96,161 +135,138 @@ export class RecordsEventsService {
   }
 
   async getNotifications(userId?: string, userRole?: UserRole): Promise<any[]> {
-    const now = new Date();
-    const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
+  const nowUtc = new Date();
+  const oneHourFromNowUtc = new Date(nowUtc.getTime() + 60 * 60 * 1000);
 
-    const matchConditions: any = {
-      "comments.isCompleted": false,
-      "comments.scheduledTime": { $exists: true, $ne: null },
-      "comments.scheduledDate": { $exists: true, $ne: null },
-    };
+  const matchConditions: any = {
+    "comments.isCompleted": false,
+    "comments.scheduledTime": { $exists: true, $ne: null },
+    "comments.scheduledDate": { $exists: true, $ne: null },
+  };
 
-    if (userId && Types.ObjectId.isValid(userId)) {
-      matchConditions.assignedCollector = new Types.ObjectId(userId);
-    }
+  if (userId && Types.ObjectId.isValid(userId)) {
+    matchConditions.assignedCollector = new Types.ObjectId(userId);
+  }
 
-    const records = await this.recordModel
-      .find(matchConditions)
-      .populate("assignedCollector", "username")
-      .populate("comments.author", "username")
-      .exec();
+  return this.recordModel
+    .find(matchConditions)
+    .populate("assignedCollector", "username")
+    .populate("comments.author", "username")
+    .exec()
+    .then(async (records) => {
+      const notifications: any[] = [];
 
-    const notifications: any[] = [];
+      records.forEach((record) => {
+        const latestIncompleteComment = record.comments
+          .filter((c: any) => !c.isCompleted && c.scheduledDate && c.scheduledTime)
+          .sort((a: any, b: any) => {
+            const aUtc = this.ptDateTimeToUtc(a.scheduledDate, a.scheduledTime);
+            const bUtc = this.ptDateTimeToUtc(b.scheduledDate, b.scheduledTime);
+            return bUtc.getTime() - aUtc.getTime();
+          })[0];
 
-    records.forEach((record) => {
-      const latestIncompleteComment = record.comments
-        .filter((c: any) => !c.isCompleted && c.scheduledDate && c.scheduledTime)
-        .sort(
-          (a: any, b: any) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        )[0];
+        if (!latestIncompleteComment) return;
 
-      if (!latestIncompleteComment) return;
+        try {
+          const scheduledUtc = this.ptDateTimeToUtc(
+            latestIncompleteComment.scheduledDate,
+            latestIncompleteComment.scheduledTime
+          );
 
-      try {
-        const dateFromDb = new Date(latestIncompleteComment.scheduledDate);
-        const [hour, minute] = latestIncompleteComment.scheduledTime
-          .split(":")
-          .map(Number);
+          if (isNaN(scheduledUtc.getTime())) return;
 
-        const scheduledDateTime = new Date(
-          dateFromDb.getUTCFullYear(),
-          dateFromDb.getUTCMonth(),
-          dateFromDb.getUTCDate(),
-          hour,
-          minute
-        );
+          const isUpcoming =
+            scheduledUtc > nowUtc && scheduledUtc <= oneHourFromNowUtc;
+          const isActive =
+            scheduledUtc <= nowUtc && scheduledUtc >= new Date(nowUtc.getTime() - 60 * 60 * 1000);
+          const isOverdue = scheduledUtc < new Date(nowUtc.getTime() - 60 * 60 * 1000);
 
-        if (isNaN(scheduledDateTime.getTime())) return;
+          let shouldAdd = false;
+          if (userRole === UserRole.ADMIN || userRole === UserRole.SUPER_ADMIN) {
+            if (isOverdue) shouldAdd = true;
+          } else if (userRole === UserRole.COLLECTOR) {
+            if (isUpcoming || isActive) shouldAdd = true;
+          }
 
-        const eventEndTime = new Date(scheduledDateTime.getTime() + 15 * 60 * 1000);
-
-        const isOverdue = now > eventEndTime;
-        const isUpcoming = scheduledDateTime > now && scheduledDateTime <= oneHourFromNow;
-        const isActive = scheduledDateTime <= now && now <= eventEndTime;
-
-        let shouldAdd = false;
-        if (userRole === UserRole.ADMIN || userRole === UserRole.SUPER_ADMIN) {
-          if (isOverdue) shouldAdd = true;
-        } else if (userRole === UserRole.COLLECTOR) {
-          if (isUpcoming || isActive) shouldAdd = true;
-        }
-
-        if (shouldAdd) {
-          notifications.push({
-            recordId: record._id,
-            commentId: latestIncompleteComment._id,
-            ptName: record.ptName,
-            text: latestIncompleteComment.text,
-            status: latestIncompleteComment.status,
-            scheduledDate: latestIncompleteComment.scheduledDate,
-            scheduledTime: latestIncompleteComment.scheduledTime,
-            author: latestIncompleteComment.author,
-            assignedCollector: record.assignedCollector,
-            isOverdue,
-            isAssignment: false,
-          });
-        }
-      } catch (e) {
-        // keep silent / non-fatal
-        console.error("Error processing notification for record:", record._id, e);
-      }
-    });
-
-    // New assignment notifications (collectors only)
-    if (userRole === UserRole.COLLECTOR && userId && Types.ObjectId.isValid(userId)) {
-      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-      const assignedRecords = await this.recordModel
-        .find({
-          assignedCollector: new Types.ObjectId(userId),
-          assignedAt: { $gte: twentyFourHoursAgo },
-        })
-        .populate("assignedCollector", "username")
-        .populate("comments.author", "_id")
-        .exec();
-
-      assignedRecords.forEach((record) => {
-        const hasActivity = record.comments.some((comment: any) => {
-          if (!comment.createdAt) return false;
-
-          const commentAuthorId = (comment.author as any)._id
-            ? (comment.author as any)._id.toString()
-            : comment.author.toString();
-
-          if (commentAuthorId !== userId.toString()) return false;
-
-          return new Date(comment.createdAt) > new Date((record as any).assignedAt);
-        });
-
-        if (hasActivity) return;
-
-        const exists = notifications.some(
-          (n) => n.recordId.toString() === record._id.toString()
-        );
-
-        if (!exists) {
-          notifications.push({
-            recordId: record._id,
-            ptName: record.ptName,
-            text: `New record assigned: ${record.ptName}`,
-            status: "Assigned",
-            scheduledDate: (record as any).assignedAt,
-            scheduledTime: "Now",
-            assignedCollector: record.assignedCollector,
-            isAssignment: true,
-            isOverdue: false,
-          });
+          if (shouldAdd) {
+            notifications.push({
+              recordId: record._id,
+              commentId: latestIncompleteComment._id,
+              ptName: record.ptName,
+              text: latestIncompleteComment.text,
+              status: latestIncompleteComment.status,
+              scheduledDate: latestIncompleteComment.scheduledDate,
+              scheduledTime: latestIncompleteComment.scheduledTime,
+              author: latestIncompleteComment.author,
+              assignedCollector: record.assignedCollector,
+              isOverdue,
+              isAssignment: false,
+            });
+          }
+        } catch (e) {
+          console.error("Error processing notification for record:", record._id, e);
         }
       });
-    }
 
-    notifications.sort((a, b) => {
-      const dateAObj = new Date(a.scheduledDate);
-      const [hourA, minA] = a.scheduledTime.split(":").map(Number);
-      const dateA = new Date(
-        dateAObj.getUTCFullYear(),
-        dateAObj.getUTCMonth(),
-        dateAObj.getUTCDate(),
-        hourA,
-        minA
-      );
+      // New assignment notifications (collectors only)
+      if (userRole === UserRole.COLLECTOR && userId && Types.ObjectId.isValid(userId)) {
+        const twentyFourHoursAgo = new Date(nowUtc.getTime() - 24 * 60 * 60 * 1000);
 
-      const dateBObj = new Date(b.scheduledDate);
-      const [hourB, minB] = b.scheduledTime.split(":").map(Number);
-      const dateB = new Date(
-        dateBObj.getUTCFullYear(),
-        dateBObj.getUTCMonth(),
-        dateBObj.getUTCDate(),
-        hourB,
-        minB
-      );
+        const assignedRecords = await this.recordModel
+          .find({
+            assignedCollector: new Types.ObjectId(userId),
+            assignedAt: { $gte: twentyFourHoursAgo },
+          })
+          .populate("assignedCollector", "username")
+          .populate("comments.author", "_id")
+          .exec();
 
-      return dateA.getTime() - dateB.getTime();
+        assignedRecords.forEach((record) => {
+          const hasActivity = record.comments.some((comment: any) => {
+            if (!comment.createdAt) return false;
+
+            const commentAuthorId = (comment.author as any)._id
+              ? (comment.author as any)._id.toString()
+              : comment.author.toString();
+
+            if (commentAuthorId !== userId.toString()) return false;
+
+            return new Date(comment.createdAt) > new Date((record as any).assignedAt);
+          });
+
+          if (hasActivity) return;
+
+          const exists = notifications.some(
+            (n) => n.recordId.toString() === record._id.toString()
+          );
+
+          if (!exists) {
+            const assignedAt = (record as any).assignedAt;
+            notifications.push({
+              recordId: record._id,
+              ptName: record.ptName,
+              text: `New record assigned: ${record.ptName}`,
+              status: "Assigned",
+              scheduledDate: assignedAt,
+              // keep consistent "HH:mm" so frontend sorting/parsing doesn't break
+              scheduledTime: this.ptTimeFromDate(assignedAt),
+              assignedCollector: record.assignedCollector,
+              isAssignment: true,
+              isOverdue: false,
+            });
+          }
+        });
+      }
+
+      notifications.sort((a, b) => {
+        const aUtc = this.ptDateTimeToUtc(a.scheduledDate, a.scheduledTime);
+        const bUtc = this.ptDateTimeToUtc(b.scheduledDate, b.scheduledTime);
+        return aUtc.getTime() - bUtc.getTime();
+      });
+
+      return notifications;
     });
-
-    return notifications;
-  }
+}
 
   async getOverdueEvents(): Promise<any[]> {
     const now = new Date();

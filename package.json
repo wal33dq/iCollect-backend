@@ -34,6 +34,7 @@
     "class-validator": "^0.14.2",
     "dotenv": "^17.2.1",
     "fast-csv": "^5.0.2",
+    "luxon": "^3.7.2",
     "mime-types": "^3.0.1",
     "mongoose": "^8.16.5",
     "nodemailer": "^7.0.7",

@@ -25,6 +25,7 @@ import { Roles } from "../auth/decorators/roles.decorator";
 import { UserRole } from "../users/schemas/user-role.enum";
 import { RecordsService } from "./records.service";
 import { CreateRecordDto } from "./dto/create-record.dto";
+import { DateTime } from "luxon";
 
 @Controller("records")
 @UseGuards(JwtAuthGuard)
@@ -359,7 +360,12 @@ export class RecordsController {
     const comment = {
       ...commentData,
       scheduledDate: commentData.scheduledDate
-        ? new Date(commentData.scheduledDate)
+        ? DateTime.fromISO(String(commentData.scheduledDate).slice(0, 10), {
+            zone: "America/Los_Angeles",
+          })
+            .startOf("day")
+            .toUTC()
+            .toJSDate()
         : undefined,
     };
 
