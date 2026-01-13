@@ -7,10 +7,12 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { LocalStrategy } from './strategies/local.strategy';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy'; // <-- Import
+import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 
 @Module({
   imports: [
+    // IMPORTANT: if ConfigModule is not global in AppModule, keep this here
+    ConfigModule,
     UsersModule,
     PassportModule,
     JwtModule.registerAsync({
@@ -22,8 +24,7 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy'; // <-- I
       }),
     }),
   ],
-  providers: [AuthService, LocalStrategy, JwtStrategy,JwtRefreshStrategy,],
-  
+  providers: [AuthService, LocalStrategy, JwtStrategy, JwtRefreshStrategy],
   controllers: [AuthController],
 })
 export class AuthModule {}
