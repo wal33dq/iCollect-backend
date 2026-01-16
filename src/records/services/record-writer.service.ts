@@ -13,6 +13,24 @@ export class RecordWriterService {
     @InjectModel(Record.name) private readonly recordModel: Model<RecordDocument>
   ) {}
 
+  private toObjectId(value?: string | Types.ObjectId): Types.ObjectId | null {
+    if (!value) return null;
+    if (value instanceof Types.ObjectId) return value;
+    if (Types.ObjectId.isValid(value)) {
+      return new Types.ObjectId(value);
+    }
+    return null;
+  }
+
+  private toObjectIdFromRef(value: any): Types.ObjectId | null {
+    if (!value) return null;
+    if (value instanceof Types.ObjectId) return value;
+    if (value._id) {
+      return this.toObjectId(value._id);
+    }
+    return this.toObjectId(value);
+  }
+
   // ==========================================
   // Reference ID Logic (Helpers Only)
   // ==========================================
@@ -40,7 +58,7 @@ export class RecordWriterService {
 
   // ==========================================
 
-  async create(createRecordDto: CreateRecordDto): Promise<Record> {
+  async create(createRecordDto: CreateRecordDto, actor?: any): Promise<Record> {
     const payload: any = { ...createRecordDto };
 
     if (payload.assignedCollector) {
@@ -50,7 +68,21 @@ export class RecordWriterService {
 
       payload.assignedCollector = new Types.ObjectId(payload.assignedCollector);
       // Set assignedAt when creating with a collector
-      payload.assignedAt = new Date();
+      const assignedAt = new Date();
+      payload.assignedAt = assignedAt;
+
+      const assignedBy = this.toObjectId(actor?.userId || actor?._id);
+      if (assignedBy) {
+        payload.assignedBy = assignedBy;
+        payload.assignmentHistory = [
+          {
+            fromCollector: null,
+            toCollector: payload.assignedCollector,
+            assignedBy,
+            assignedAt,
+          },
+        ];
+      }
     }
 
     // Outstanding calc
@@ -79,7 +111,8 @@ export class RecordWriterService {
 
   async reassignMany(
     recordIds: string[],
-    collectorId: string
+    collectorId: string,
+    actor?: any
   ): Promise<{ modifiedCount: number }> {
     let collectorValue: Types.ObjectId | null = null;
 
@@ -99,15 +132,53 @@ export class RecordWriterService {
       throw new BadRequestException("One or more invalid record IDs provided.");
     }
 
-    const result = await this.recordModel.updateMany(
-      { _id: { $in: validRecordIds } },
-      { $set: { assignedCollector: collectorValue, assignedAt: new Date() } }
-    );
+    const records = await this.recordModel
+      .find({ _id: { $in: validRecordIds } })
+      .select("_id assignedCollector")
+      .exec();
+
+    if (records.length === 0) {
+      return { modifiedCount: 0 };
+    }
+
+    const assignedAt = new Date();
+    const assignedBy = this.toObjectId(actor?.userId || actor?._id);
+
+    const operations = records.map((record) => {
+      const fromCollector = this.toObjectIdFromRef(record.assignedCollector);
+
+      return {
+        updateOne: {
+          filter: { _id: record._id },
+          update: {
+            $set: {
+              assignedCollector: collectorValue,
+              assignedAt,
+              assignedBy,
+            },
+            $push: {
+              assignmentHistory: {
+                fromCollector,
+                toCollector: collectorValue,
+                assignedBy,
+                assignedAt,
+              },
+            },
+          },
+        },
+      };
+    });
+
+    const result = await this.recordModel.bulkWrite(operations);
 
     return { modifiedCount: result.modifiedCount };
   }
 
-  async assignCollector(id: string, collectorId: string): Promise<Record> {
+  async assignCollector(
+    id: string,
+    collectorId: string,
+    actor?: any
+  ): Promise<Record> {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException("Invalid record ID format.");
     }
@@ -122,17 +193,44 @@ export class RecordWriterService {
       throw new BadRequestException("Invalid collectorId format.");
     }
 
+    const existingRecord = await this.recordModel
+      .findById(id)
+      .select("_id assignedCollector")
+      .exec();
+
+    if (!existingRecord) {
+      throw new BadRequestException("Record not found");
+    }
+
+    const assignedAt = new Date();
+    const assignedBy = this.toObjectId(actor?.userId || actor?._id);
+    const fromCollector = this.toObjectIdFromRef(existingRecord.assignedCollector);
+
     const record = await this.recordModel
       .findByIdAndUpdate(
         id,
-        { assignedCollector: collectorValue, assignedAt: new Date() },
+        {
+          $set: {
+            assignedCollector: collectorValue,
+            assignedAt,
+            assignedBy,
+          },
+          $push: {
+            assignmentHistory: {
+              fromCollector,
+              toCollector: collectorValue,
+              assignedBy,
+              assignedAt,
+            },
+          },
+        },
         { new: true }
       )
-      .populate("assignedCollector", "username")
+      .populate("assignedCollector", "username fullName")
+      .populate("assignedBy", "username fullName")
       .populate("comments.author", "username")
       .exec();
 
-    if (!record) throw new BadRequestException("Record not found");
     return record;
   }
 

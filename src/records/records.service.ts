@@ -29,20 +29,24 @@ export class RecordsService {
   }
 
   // --- Create / Write ---
-  create(createRecordDto: CreateRecordDto): Promise<Record> {
-    return this.writer.create(createRecordDto);
+  create(createRecordDto: CreateRecordDto, actor?: any): Promise<Record> {
+    return this.writer.create(createRecordDto, actor);
   }
 
   update(id: string, updateData: any, user: any): Promise<Record> {
     return this.writer.update(id, updateData, user);
   }
 
-  assignCollector(id: string, collectorId: string): Promise<Record> {
-    return this.writer.assignCollector(id, collectorId);
+  assignCollector(id: string, collectorId: string, actor?: any): Promise<Record> {
+    return this.writer.assignCollector(id, collectorId, actor);
   }
 
-  reassignMany(recordIds: string[], collectorId: string): Promise<{ modifiedCount: number }> {
-    return this.writer.reassignMany(recordIds, collectorId);
+  reassignMany(
+    recordIds: string[],
+    collectorId: string,
+    actor?: any
+  ): Promise<{ modifiedCount: number }> {
+    return this.writer.reassignMany(recordIds, collectorId, actor);
   }
 
   deleteMany(ids: string[]): Promise<{ deletedCount: number }> {
@@ -50,8 +54,8 @@ export class RecordsService {
   }
 
   // --- Upload ---
-  processUpload(buffer: Buffer, collectorId?: string) {
-    return this.upload.processUpload(buffer, collectorId);
+  processUpload(buffer: Buffer, collectorId?: string, actor?: any) {
+    return this.upload.processUpload(buffer, collectorId, actor);
   }
 
   // --- Duplicates ---
@@ -127,5 +131,9 @@ export class RecordsService {
   // --- Summary ---
   getSummary(user: any): Promise<any> {
     return this.summary.getSummary(user);
+  }
+
+  getAssignmentSummary(startDate?: Date, endDate?: Date): Promise<any[]> {
+    return this.query.getAssignmentSummary(startDate, endDate);
   }
 }

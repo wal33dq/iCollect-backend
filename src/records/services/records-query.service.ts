@@ -194,4 +194,57 @@ export class RecordsQueryService {
     if (!record) throw new BadRequestException("Record not found");
     return record;
   }
+
+  async getAssignmentSummary(startDate?: Date, endDate?: Date): Promise<any[]> {
+    const match: any = {};
+
+    if (startDate || endDate) {
+      const range: any = {};
+      if (startDate) range.$gte = startDate;
+      if (endDate) range.$lte = endDate;
+      match.$or = [{ assignedAt: range }, { "assignmentHistory.assignedAt": range }];
+    }
+
+    const records = await this.recordModel
+      .find(match)
+      .populate("assignedCollector", "username fullName")
+      .populate("assignedBy", "username fullName")
+      .populate("assignmentHistory.fromCollector", "username fullName")
+      .populate("assignmentHistory.toCollector", "username fullName")
+      .populate("assignmentHistory.assignedBy", "username fullName")
+      .exec();
+
+    const formatUser = (user: any) => {
+      if (!user) return null;
+      const id = user._id ? user._id.toString() : user.toString();
+      return {
+        id,
+        username: user.username,
+        fullName: user.fullName,
+      };
+    };
+
+    return records.map((record) => ({
+  recordId: record._id.toString(),
+
+  // ✅ add these fields for UI display
+  provider: record.provider || null,
+  ptName: record.ptName || null,
+  adjNumber: Array.isArray(record.adjNumber)
+    ? record.adjNumber.map((a: any) => a?.value).filter(Boolean)
+    : [],
+
+  assignedCollector: formatUser(record.assignedCollector),
+  assignedBy: formatUser(record.assignedBy),
+  assignedAt: record.assignedAt,
+
+  assignmentHistory: (record.assignmentHistory || []).map((entry: any) => ({
+    fromCollector: formatUser(entry.fromCollector),
+    toCollector: formatUser(entry.toCollector),
+    assignedBy: formatUser(entry.assignedBy),
+    assignedAt: entry.assignedAt,
+  })),
+}));
+
+  }
 }

@@ -45,8 +45,8 @@ export class RecordsController {
   @Post()
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
-  async createRecord(@Body() createRecordDto: CreateRecordDto) {
-    return this.recordsService.create(createRecordDto);
+  async createRecord(@Body() createRecordDto: CreateRecordDto, @Request() req) {
+    return this.recordsService.create(createRecordDto, req.user);
   }
 
   @Post("upload")
@@ -66,12 +66,13 @@ export class RecordsController {
       })
     )
     file: Express.Multer.File,
+    @Request() req,
     @Body("collectorId") collectorId?: string
   ) {
     if (!file) {
       throw new BadRequestException("Make sure to upload a file");
     }
-    return this.recordsService.processUpload(file.buffer, collectorId);
+    return this.recordsService.processUpload(file.buffer, collectorId, req.user);
   }
 
   @Get()
@@ -185,6 +186,27 @@ export class RecordsController {
     }
     return this.recordsService.mergeSelectedDuplicates(primaryId, duplicateIds);
   }
+
+  @Get("assignments/summary")
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  async getAssignmentSummary(
+    @Query("startDate") startDate?: string,
+    @Query("endDate") endDate?: string
+  ) {
+    const start = startDate ? new Date(startDate) : undefined;
+    const end = endDate ? new Date(endDate) : undefined;
+
+    if (startDate && isNaN(start.getTime())) {
+      throw new BadRequestException("Invalid startDate.");
+    }
+    if (endDate && isNaN(end.getTime())) {
+      throw new BadRequestException("Invalid endDate.");
+    }
+
+    return this.recordsService.getAssignmentSummary(start, end);
+  }
+
   @Get(":id")
   async getRecord(@Param("id") id: string, @Request() req) {
     const record = await this.recordsService.findById(id);
@@ -245,7 +267,8 @@ export class RecordsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   async reassignMany(
     @Body("recordIds") recordIds: string[],
-    @Body("collectorId") collectorId: string
+    @Body("collectorId") collectorId: string,
+    @Request() req
   ) {
     if (!recordIds || !Array.isArray(recordIds) || recordIds.length === 0) {
       throw new BadRequestException("recordIds must be a non-empty array.");
@@ -253,7 +276,7 @@ export class RecordsController {
     if (!collectorId) {
       throw new BadRequestException("collectorId is required.");
     }
-    return this.recordsService.reassignMany(recordIds, collectorId);
+    return this.recordsService.reassignMany(recordIds, collectorId, req.user);
   }
 
   @Put(":id/assign")
@@ -294,8 +317,9 @@ export class RecordsController {
     if (!collectorId) {
       throw new BadRequestException("collectorId is required.");
     }
-    return this.recordsService.assignCollector(id, collectorId);
+    return this.recordsService.assignCollector(id, collectorId, req.user);
   }
+
 
   @Put(":id")
   async updateRecord(

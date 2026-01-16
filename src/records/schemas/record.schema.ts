@@ -93,6 +93,24 @@ class Comment {
 }
 const CommentSchema = SchemaFactory.createForClass(Comment);
 
+@Schema({ _id: false })
+class AssignmentHistoryEntry {
+  @Prop({ type: Types.ObjectId, ref: "User" })
+  fromCollector: User;
+
+  @Prop({ type: Types.ObjectId, ref: "User" })
+  toCollector: User;
+
+  @Prop({ type: Types.ObjectId, ref: "User" })
+  assignedBy: User;
+
+  @Prop()
+  assignedAt: Date;
+}
+const AssignmentHistoryEntrySchema = SchemaFactory.createForClass(
+  AssignmentHistoryEntry
+);
+
 @Schema({ timestamps: true })
 export class Record {
   _id: Types.ObjectId;
@@ -315,6 +333,12 @@ export class Record {
   // NEW: Track when the record was assigned to the current collector
   @Prop({ default: Date.now })
   assignedAt: Date;
+
+  @Prop({ type: Types.ObjectId, ref: "User" })
+  assignedBy: User;
+
+  @Prop({ type: [AssignmentHistoryEntrySchema], default: [] })
+  assignmentHistory: AssignmentHistoryEntry[];
 
   @Prop({ default: Date.now, immutable: true })
   recordCreatedAt: Date;

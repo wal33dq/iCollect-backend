@@ -9,7 +9,8 @@ export class RecordsUploadService {
 
   async processUpload(
     buffer: Buffer,
-    collectorId?: string
+    collectorId?: string,
+    actor?: any
   ): Promise<{ count: number; failedRecords: any[] }> {
     let workbook: XLSX.WorkBook;
 
@@ -174,7 +175,7 @@ export class RecordsUploadService {
 
     for (const rec of records) {
       try {
-        await this.writer.create(rec as any);
+        await this.writer.create(rec as any, actor);
         count++;
       } catch (err: any) {
         failedRecords.push({
