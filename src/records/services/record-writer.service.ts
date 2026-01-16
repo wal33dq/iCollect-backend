@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException, Logger } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
-import { Model, Types } from "mongoose";
+import { AnyBulkWriteOperation, Model, Types } from "mongoose";
+import type { UpdateFilter } from "mongodb";
 import { Record, RecordDocument } from "../schemas/record.schema";
 import { CreateRecordDto } from "../dto/create-record.dto";
 import { UserRole } from "../../users/schemas/user-role.enum";
@@ -144,27 +145,33 @@ export class RecordWriterService {
     const assignedAt = new Date();
     const assignedBy = this.toObjectId(actor?.userId || actor?._id);
 
-    const operations = records.map((record) => {
+    const operations: AnyBulkWriteOperation<RecordDocument>[] = records.map((record) => {
       const fromCollector = this.toObjectIdFromRef(record.assignedCollector);
+
+      // NOTE:
+      // RecordDocument typings can treat populated refs as `User` while DB updates use ObjectId.
+      // Newer Mongoose/TS versions (often on server) validate this strictly.
+      // Cast ref fields to satisfy UpdateFilter typing.
+      const update: UpdateFilter<RecordDocument> = {
+        $set: {
+          assignedCollector: collectorValue as any,
+          assignedAt,
+          assignedBy: assignedBy as any,
+        },
+        $push: {
+          assignmentHistory: {
+            fromCollector: fromCollector as any,
+            toCollector: collectorValue as any,
+            assignedBy: assignedBy as any,
+            assignedAt,
+          } as any,
+        },
+      };
 
       return {
         updateOne: {
           filter: { _id: record._id },
-          update: {
-            $set: {
-              assignedCollector: collectorValue,
-              assignedAt,
-              assignedBy,
-            },
-            $push: {
-              assignmentHistory: {
-                fromCollector,
-                toCollector: collectorValue,
-                assignedBy,
-                assignedAt,
-              },
-            },
-          },
+          update,
         },
       };
     });
