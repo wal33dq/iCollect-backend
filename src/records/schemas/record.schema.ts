@@ -174,35 +174,35 @@ export class Record {
 
   @Prop({
     type: String,
-    enum: ["yes", "no", "not required"], // Fixed: Restricts to yes/no/not required
-    default: "not required", // Default to 'not required' if not provided in XLSX
-    required: false, // Make optional
+    enum: ["yes", "no", "not required"],
+    default: "not required",
+    required: false,
   })
-  ledger: string; // Renamed to lowercase for convention
+  ledger: string;
 
   @Prop({
     type: String,
-    enum: ["yes", "no", "not required"], // Fixed: Restricts to yes/no/not required
-    default: "not required", // Default to 'not required' if not provided in XLSX
-    required: false, // Make optional
+    enum: ["yes", "no", "not required"],
+    default: "not required",
+    required: false,
   })
-  hcf: string; // Renamed to lowercase for convention
+  hcf: string;
 
   @Prop({
     type: String,
-    enum: ["yes", "no", "not required"], // Fixed: Restricts to yes/no/not required
-    default: "not required", // Default to 'not required' if not provided in XLSX
-    required: false, // Make optional
+    enum: ["yes", "no", "not required"],
+    default: "not required",
+    required: false,
   })
-  invoice: string; // Renamed to lowercase for convention
+  invoice: string;
 
   @Prop({
     type: String,
-    enum: ["yes", "no", "not required"], // Fixed: Restricts to yes/no/not required
-    default: "not required", // Default to 'not required' if not provided in XLSX
-    required: false, // Make optional
+    enum: ["yes", "no", "not required"],
+    default: "not required",
+    required: false,
   })
-  signinSheet: string; // Renamed to lowercase for convention
+  signinSheet: string;
 
   @Prop()
   insurance: string;
@@ -275,7 +275,6 @@ export class Record {
   @Prop({
     index: true,
     type: String,
-    // MODIFIED: Added enum validation for the new dropdown values
     enum: [
       "SETTLED",
       "C & R (GRANTED)",
@@ -330,7 +329,6 @@ export class Record {
   @Prop({ type: Types.ObjectId, ref: "User", index: true })
   assignedCollector: User;
 
-  // NEW: Track when the record was assigned to the current collector
   @Prop({ default: Date.now })
   assignedAt: Date;
 
@@ -342,6 +340,16 @@ export class Record {
 
   @Prop({ default: Date.now, immutable: true })
   recordCreatedAt: Date;
+
+  // --- PAYMENT REDEEMER ASSIGNMENT ---
+  @Prop({ type: Types.ObjectId, ref: "User", index: true, default: null })
+  assignedPaymentRedeemer: User;
+
+  @Prop({ default: null })
+  paymentAssignedAt: Date;
+
+  @Prop({ type: Types.ObjectId, ref: "User", default: null })
+  paymentAssignedBy: User;
 }
 
 export const RecordSchema = SchemaFactory.createForClass(Record);

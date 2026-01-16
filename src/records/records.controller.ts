@@ -127,9 +127,16 @@ export class RecordsController {
   @Get("notifications")
   async getNotifications(@Request() req) {
     const user = req.user;
-    const userId = user.role === UserRole.COLLECTOR ? user.userId : undefined;
+
+    // ✅ IMPORTANT: Payment Redeemer also needs userId so notifications can be filtered
+    const userId =
+      user.role === UserRole.COLLECTOR || user.role === UserRole.PAYMENT_REDEEMER
+        ? user.userId
+        : undefined;
+
     return this.recordsService.getNotifications(userId, user.role);
   }
+
 
   @Get("overdue-events")
   @UseGuards(RolesGuard)

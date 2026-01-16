@@ -30,6 +30,9 @@ export class RecordsQueryService {
     const andFilters: any[] = [];
     let collectorObjectId: Types.ObjectId | null = null;
 
+    const isCollectorUser = user.role === UserRole.COLLECTOR;
+    const isPaymentRedeemerUser = user.role === UserRole.PAYMENT_REDEEMER;
+
     // Provider Role filter (Case Insensitive + Whitespace tolerant)
     if (user.role === UserRole.PROVIDER) {
       const providerName = (user.fullName || user.username || "").trim();
@@ -43,8 +46,12 @@ export class RecordsQueryService {
 
     // --- Collector filter ---
     // IMPORTANT: Collectors should NEVER be allowed to query other collectors' records.
-    const isCollectorUser = user.role === UserRole.COLLECTOR;
-    const effectiveCollectorId = isCollectorUser ? user.userId : collectorId;
+    // Payment Redeemers should NEVER query collector-based views.
+    const effectiveCollectorId = isCollectorUser
+      ? user.userId
+      : isPaymentRedeemerUser
+      ? undefined
+      : collectorId;
 
     if (effectiveCollectorId) {
       if (effectiveCollectorId === "unassigned") {
@@ -98,6 +105,36 @@ export class RecordsQueryService {
       });
     }
 
+    // --- Payment Redeemer filter ---
+    // Payment Redeemer should only see records assigned to them.
+    if (isPaymentRedeemerUser) {
+      if (!Types.ObjectId.isValid(user.userId)) {
+        throw new BadRequestException(
+          "Invalid payment redeemer userId in token."
+        );
+      }
+
+      const redeemerObjectId = new Types.ObjectId(user.userId);
+      const idStr = redeemerObjectId.toString();
+
+      // Backward-compatible match (similar to collector matching)
+      andFilters.push({
+        $or: [
+          { assignedPaymentRedeemer: redeemerObjectId },
+          { assignedPaymentRedeemer: idStr },
+          { "assignedPaymentRedeemer._id": redeemerObjectId },
+          { "assignedPaymentRedeemer._id": idStr },
+        ],
+      });
+
+      // Default behavior: Payment Redeemer queue is "Waiting For Payment" records.
+      // (Your comments are pushed at index 0, so comments.0 is the latest comment.)
+      andFilters.push({
+        "comments.0.status": "wfp",
+        "comments.0.isCompleted": false,
+      });
+    }
+
     // Search
     if (search) {
       const searchRegex = new RegExp(search, "i");
@@ -147,6 +184,7 @@ export class RecordsQueryService {
     const data = await this.recordModel
       .find(baseQuery)
       .populate("assignedCollector", "username")
+      .populate("assignedPaymentRedeemer", "username")
       .populate("comments.author", "username")
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -188,6 +226,7 @@ export class RecordsQueryService {
     const record = await this.recordModel
       .findById(id)
       .populate("assignedCollector", "username")
+      .populate("assignedPaymentRedeemer", "username")
       .populate("comments.author", "username")
       .exec();
 
@@ -225,26 +264,21 @@ export class RecordsQueryService {
     };
 
     return records.map((record) => ({
-  recordId: record._id.toString(),
-
-  // ✅ add these fields for UI display
-  provider: record.provider || null,
-  ptName: record.ptName || null,
-  adjNumber: Array.isArray(record.adjNumber)
-    ? record.adjNumber.map((a: any) => a?.value).filter(Boolean)
-    : [],
-
-  assignedCollector: formatUser(record.assignedCollector),
-  assignedBy: formatUser(record.assignedBy),
-  assignedAt: record.assignedAt,
-
-  assignmentHistory: (record.assignmentHistory || []).map((entry: any) => ({
-    fromCollector: formatUser(entry.fromCollector),
-    toCollector: formatUser(entry.toCollector),
-    assignedBy: formatUser(entry.assignedBy),
-    assignedAt: entry.assignedAt,
-  })),
-}));
-
+      recordId: record._id.toString(),
+      provider: record.provider || null,
+      ptName: record.ptName || null,
+      adjNumber: Array.isArray(record.adjNumber)
+        ? record.adjNumber.map((a: any) => a?.value).filter(Boolean)
+        : [],
+      assignedCollector: formatUser(record.assignedCollector),
+      assignedBy: formatUser(record.assignedBy),
+      assignedAt: record.assignedAt,
+      assignmentHistory: (record.assignmentHistory || []).map((entry: any) => ({
+        fromCollector: formatUser(entry.fromCollector),
+        toCollector: formatUser(entry.toCollector),
+        assignedBy: formatUser(entry.assignedBy),
+        assignedAt: entry.assignedAt,
+      })),
+    }));
   }
 }
