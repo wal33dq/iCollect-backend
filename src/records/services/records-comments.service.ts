@@ -66,6 +66,12 @@ export class RecordsCommentsService {
       scheduledDate?: Date;
       scheduledTime?: string;
       offerAmount?: number;
+    
+      // Payment Received extra fields (Payment Redeemer only)
+      checkNumber?: string;
+      checkDate?: Date;
+      checkAmount?: number;
+      checkCopy?: { fileName: string; mimeType: string; base64: string };
     },
     user: any
   ): Promise<Record> {
@@ -73,10 +79,11 @@ export class RecordsCommentsService {
       throw new BadRequestException("Invalid record ID format.");
     }
 
-    // Only admins can close or mark payment received.
+    // Role rules:
+// - closed: Admin/Super Admin only
+// - payment_received: Payment Redeemer only
     if (
-      (commentData.status === "closed" ||
-        commentData.status === "payment_received") &&
+      commentData.status === "closed" &&
       user.role !== UserRole.ADMIN &&
       user.role !== UserRole.SUPER_ADMIN
     ) {
@@ -85,7 +92,44 @@ export class RecordsCommentsService {
       );
     }
 
-    // Complete previous open scheduled tasks
+    if (
+      commentData.status === "payment_received" &&
+      user.role !== UserRole.PAYMENT_REDEEMER
+    ) {
+      throw new ForbiddenException(
+        "Only Payment Redeemer can add 'Payment Received' comments."
+      );
+    }
+
+    // Validation for payment_received details
+    if (commentData.status === "payment_received") {
+      const checkNumber = (commentData.checkNumber || "").trim();
+      const checkDate = commentData.checkDate;
+      const amount = commentData.checkAmount;
+      const copy = commentData.checkCopy;
+
+      if (!checkNumber) {
+        throw new BadRequestException("Check Number is required.");
+      }
+      if (!checkDate) {
+        throw new BadRequestException("Check Date is required.");
+      }
+      if (amount === undefined || amount === null || Number(amount) <= 0) {
+        throw new BadRequestException("Check Amount must be greater than 0.");
+      }
+      if (!copy || !copy.base64) {
+        throw new BadRequestException("Attach Copy of Check is required.");
+      }
+
+      // ~5MB base64 guard (approx)
+      const approxBytes = Math.floor((copy.base64.length * 3) / 4);
+      const maxBytes = 5 * 1024 * 1024;
+      if (approxBytes > maxBytes) {
+        throw new BadRequestException("Check copy file too large. Max 5MB.");
+      }
+    }
+
+// Complete previous open scheduled tasks
     await this.recordModel.updateOne(
       { _id: recordId },
       {
@@ -112,7 +156,12 @@ export class RecordsCommentsService {
       scheduledDate: commentData.scheduledDate,
       scheduledTime: commentData.scheduledTime,
       offerAmount: commentData.offerAmount,
-      isCompleted: false,
+      
+      checkNumber: commentData.checkNumber,
+      checkDate: commentData.checkDate,
+      checkAmount: commentData.checkAmount,
+      checkCopy: commentData.checkCopy,
+isCompleted: false,
       completedAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -151,7 +200,8 @@ export class RecordsCommentsService {
       .populate("assignedCollector", "username")
       .populate("assignedPaymentRedeemer", "username")
       .populate("comments.author", "username")
-      .exec();
+      .exec()
+      .then((rec) => this.sanitizeRecordForRole(rec, user));
   }
 
   async updateComment(
@@ -185,6 +235,27 @@ export class RecordsCommentsService {
       .populate("assignedCollector", "username")
       .populate("assignedPaymentRedeemer", "username")
       .populate("comments.author", "username")
-      .exec();
+      .exec()
+      .then((rec) => this.sanitizeRecordForRole(rec, user));
   }
+
+  private sanitizeRecordForRole(record: any, user: any) {
+    if (!record || !user) return record;
+
+    const role = (user.role || "").toString().toLowerCase();
+
+    // Hide 'payment_received' comments from Collector + Hiring Representative (+ Provider).
+    // Payment Redeemer/Admin/Super Admin can view.
+    const cannotSee =
+      role === "collector" || role === "hiring_representative" || role === "provider";
+
+    if (cannotSee && Array.isArray(record.comments)) {
+      record.comments = record.comments.filter(
+        (c: any) => c && c.status !== "payment_received"
+      );
+    }
+
+    return record;
+  }
+
 }

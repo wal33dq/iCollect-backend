@@ -366,6 +366,12 @@ export class RecordsController {
       scheduledDate?: string;
       scheduledTime?: string;
       offerAmount?: number; // <--- NEW FIELD ACCEPTED HERE
+
+      // Payment Received extra fields (Payment Redeemer only)
+      checkNumber?: string;
+      checkDate?: string;
+      checkAmount?: number;
+      checkCopy?: { fileName: string; mimeType: string; base64: string };
     },
     @Request() req
   ) {
@@ -388,10 +394,23 @@ export class RecordsController {
       }
     }
 
+    // 🔐 Only Payment Redeemer can add Payment Received
+    if (commentData.status === "payment_received" && user.role !== UserRole.PAYMENT_REDEEMER) {
+      throw new ForbiddenException("Only Payment Redeemer can add 'Payment Received' comments.");
+    }
+
     const comment = {
       ...commentData,
       scheduledDate: commentData.scheduledDate
         ? DateTime.fromISO(String(commentData.scheduledDate).slice(0, 10), {
+            zone: "America/Los_Angeles",
+          })
+            .startOf("day")
+            .toUTC()
+            .toJSDate()
+        : undefined,
+      checkDate: commentData.checkDate
+        ? DateTime.fromISO(String(commentData.checkDate).slice(0, 10), {
             zone: "America/Los_Angeles",
           })
             .startOf("day")

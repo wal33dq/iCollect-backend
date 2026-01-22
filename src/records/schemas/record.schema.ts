@@ -27,15 +27,18 @@ class Comment {
       "lvm",
       "spoke_to",
       "sent_email_fax",
+      "received_email_fax",
       "offer",
       "settle",
       "request_to_close",
+      "out of sol",
+      "dor filed",
       "wfp",
-      "payment_received",
-      "closed",
       "file_pmr",
       "file_lien",
+      "payment_received",
       "hearing_remarks",
+      "closed",
     ],
   })
   status: string;
@@ -54,6 +57,28 @@ class Comment {
   offerAmount: number;
   // ----------------
 
+
+  // --- PAYMENT RECEIVED DETAILS (Payment Redeemer only) ---
+  @Prop()
+  checkNumber?: string;
+
+  @Prop()
+  checkDate?: Date;
+
+  @Prop()
+  checkAmount?: number;
+
+  @Prop({
+    type: {
+      fileName: String,
+      mimeType: String,
+      base64: String,
+    },
+    _id: false,
+    default: null,
+  })
+  checkCopy?: { fileName: string; mimeType: string; base64: string } | null;
+  // --------------------------------------------------------
   // ---------------- MERGE METADATA (for duplicate merge) ----------------
 
   // True if this comment originally lived on another (duplicate) record.
